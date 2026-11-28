@@ -48,10 +48,18 @@ const test = base.extend<{ csp: CspWatch }>({
   ],
 })
 
+// RowSample is one animation frame's answer: how many message rows (not
+// the history edge) are mounted, and whether one of them intersects the
+// log's viewport.
+interface RowSample {
+  rows: number
+  covered: boolean
+}
+
 // SamplerWindow is the page-side channel the paging spec uses to read its
-// animation-frame row counts.
+// animation-frame row samples.
 interface SamplerWindow extends Window {
-  __rowCounts?: number[]
+  __rowSamples?: RowSample[]
   __stopRowSampler?: () => void
 }
 
@@ -72,19 +80,33 @@ async function openTool(page: Page, name: string) {
   await tool(page, name).getByRole('button').first().click()
 }
 
-// startRowSampler records how many virtualized rows the log holds on every
-// animation frame until stopRowSampler reads the list.
+// startRowSampler records, every animation frame until stopRowSampler
+// reads it, whether a message row intersects the log's viewport. Row 0 is
+// the history edge and is always mounted, so it is not evidence.
 async function startRowSampler(view: Locator) {
   await view.evaluate((element) => {
     const window_ = window as SamplerWindow
-    const counts: number[] = []
-    window_.__rowCounts = counts
+    const samples: RowSample[] = []
+    window_.__rowSamples = samples
     let stop = false
     window_.__stopRowSampler = () => {
       stop = true
     }
     const tick = () => {
-      counts.push(element.querySelectorAll('[data-index]').length)
+      const box = element.getBoundingClientRect()
+      let rows = 0
+      let covered = false
+      for (const row of element.querySelectorAll<HTMLElement>('[data-index]')) {
+        if (Number(row.dataset.index) <= 0) {
+          continue
+        }
+        rows += 1
+        const rect = row.getBoundingClientRect()
+        if (rect.bottom > box.top && rect.top < box.bottom) {
+          covered = true
+        }
+      }
+      samples.push({ rows, covered })
       if (!stop) {
         requestAnimationFrame(tick)
       }
@@ -93,14 +115,14 @@ async function startRowSampler(view: Locator) {
   })
 }
 
-async function stopRowSampler(view: Locator): Promise<number[]> {
+async function stopRowSampler(view: Locator): Promise<RowSample[]> {
   return view.evaluate(() => {
     const window_ = window as SamplerWindow
     window_.__stopRowSampler?.()
-    const counts = window_.__rowCounts ?? []
-    delete window_.__rowCounts
+    const samples = window_.__rowSamples ?? []
+    delete window_.__rowSamples
     delete window_.__stopRowSampler
-    return counts
+    return samples
   })
 }
 
@@ -232,8 +254,8 @@ test('opens a long session at its end and keeps the view still when an older pag
   const beforeScroll = await log(page).evaluate((element) => element.scrollTop)
 
   // Sample every animation frame across the prepend: the virtualizer
-  // remeasures 30 prepended rows, and the view must never paint an empty
-  // log while it does.
+  // remeasures 30 prepended rows, and the view must never paint a frame
+  // without a message row covering the log while it does.
   await startRowSampler(log(page))
   const older = page.waitForResponse((response) => response.url().includes('/messages?before='))
   await button.click()
@@ -246,9 +268,12 @@ test('opens a long session at its end and keeps the view still when an older pag
   await expect
     .poll(async () => Math.abs(((await anchor.boundingBox())?.y ?? -10_000) - before), { timeout: 5_000 })
     .toBeLessThan(4)
-  const counts = await stopRowSampler(log(page))
-  expect(counts.length).toBeGreaterThan(0)
-  expect(Math.min(...counts), `row counts across the prepend: ${counts.join(',')}`).toBeGreaterThan(0)
+  const samples = await stopRowSampler(log(page))
+  expect(samples.length).toBeGreaterThan(0)
+  expect(
+    samples.filter((sample) => !sample.covered),
+    `frames without a message row in view: ${JSON.stringify(samples)}`,
+  ).toEqual([])
 
   await log(page).evaluate((element) => {
     element.scrollTop = 0
@@ -323,6 +348,10 @@ test('keeps the focus in a tool row while following a reply past the window', as
   await expect(showAll).toBeVisible()
   await showAll.focus()
   await expect(showAll).toBeFocused()
+  const showAllHandle = await showAll.elementHandle()
+  if (showAllHandle === null) {
+    throw new Error('the Show all button has no element handle')
+  }
 
   // Back to the live end without Back to bottom, which would move the
   // focus to the log itself.
@@ -336,8 +365,9 @@ test('keeps the focus in a tool row while following a reply past the window', as
     timeout: 20_000,
   })
   // The focused row stayed mounted even though the window moved far away
-  // from it, and the button still owns the focus.
-  expect(await showAll.evaluate((element) => element.isConnected)).toBe(true)
+  // from it: the handle names the same element, and it still owns the
+  // focus.
+  expect(await showAllHandle.evaluate((element) => element.isConnected)).toBe(true)
   await expect(showAll).toBeFocused()
 })
 
@@ -351,8 +381,12 @@ test('leaves the view alone while a reply streams and the reader has scrolled up
   writeFileSync(streamApp.streamFile, 'go')
   await expect(log(page).getByText('Stream line 12:', { exact: false })).toBeVisible({ timeout: 20_000 })
 
+  // Dispatch the scroll in the same task as the write: the stream commits
+  // every 150 ms, and a commit that landed before the browser's own scroll
+  // event would re-pin the view.
   await log(page).evaluate((element) => {
     element.scrollTop = 0
+    element.dispatchEvent(new Event('scroll'))
   })
   await expect(page.getByRole('button', { name: 'Back to bottom' })).toBeVisible()
   // A row at the top of the log: the prompt is row 17 of 18, and a 360 px

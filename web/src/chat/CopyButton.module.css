@@ -6,12 +6,13 @@
   /* The action fades to 60% until hover, where the secondary label falls
    * under AA; the primary label at that opacity measures 4.95:1 on the
    * light surface and 5.66:1 on the dark one. */
-  color: var(--dsw-alias-label-primary);
+  --copy-label: var(--dsw-alias-label-primary);
+  color: var(--copy-label);
   font: inherit;
   font-size: 11px;
   cursor: pointer;
 }
 
 .copy:hover {
-  color: var(--dsw-alias-label-primary);
+  color: var(--copy-label);
 }

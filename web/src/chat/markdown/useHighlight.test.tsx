@@ -54,6 +54,44 @@ describe('useHighlight', () => {
     expect(highlighter.tokenize.mock.calls.map((call) => call[0])).toEqual(['a = 1', 'a = 1\nb = 2'])
   })
 
+  // A streamed block grows after its last pass. Until the trailing pass
+  // lands, the complete lines keep their highlight and the unfinished tail
+  // renders plain; the trailing pass then covers the whole source.
+  it('highlights a streamed block up to its last complete line', async () => {
+    vi.useFakeTimers()
+    highlighter.tokenize.mockImplementation(async (code: string) =>
+      code.split('\n').map((line) => [{ text: line, className: 'tok-keyword' }]),
+    )
+    const { container, rerender } = render(<CodeBlock code={'a = 1\nb = 2\n'} language="go" />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(highlighter.tokenize.mock.calls.map((call) => call[0])).toEqual(['a = 1\nb = 2\n'])
+    // Two lines plus the empty line the trailing newline starts.
+    expect(container.querySelectorAll('[class*="tok-"]')).toHaveLength(3)
+
+    // Two deltas inside the throttle window: the first pass's last complete
+    // line is final, so it stays highlighted and the new tail is plain.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50)
+    })
+    rerender(<CodeBlock code={'a = 1\nb = 2\nc'} language="go" />)
+    rerender(<CodeBlock code={'a = 1\nb = 2\nc = 3'} language="go" />)
+    expect(highlighter.tokenize).toHaveBeenCalledTimes(1)
+    expect(container.querySelectorAll('[class*="tok-"]')).toHaveLength(2)
+    expect(container.querySelector('pre')?.textContent).toContain('c = 3')
+
+    // The trailing pass covers the final source.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(highlightThrottleMs)
+    })
+    expect(highlighter.tokenize.mock.calls.map((call) => call[0])).toEqual([
+      'a = 1\nb = 2\n',
+      'a = 1\nb = 2\nc = 3',
+    ])
+    expect(container.querySelectorAll('[class*="tok-"]')).toHaveLength(3)
+  })
+
   // A grammar that cannot load must leave the block plain rather than throw
   // or keep a stale pass: the pass is waited for, so the plain text is the
   // answer to a settled rejection and not a pass that has yet to run.

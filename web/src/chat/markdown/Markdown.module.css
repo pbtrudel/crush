@@ -60,8 +60,16 @@
   color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
 }
 
+/* The light business token is 4.23:1 on the page, below AA. The darker
+ * mix reaches 5.55:1; the dark theme keeps the token, which is legible on
+ * its surfaces. chatColors.test.ts pins both. */
 .markdown a {
-  color: var(--dsw-alias-state-business-primary, inherit);
+  --markdown-link: color-mix(in srgb, var(--dsw-static-deepseek-500) 75%, var(--dsw-static-deepseek-900));
+  color: var(--markdown-link);
+}
+
+:global(html[data-ds-theme='dark']) .markdown a {
+  --markdown-link: var(--dsw-alias-state-business-primary);
 }
 
 .markdown hr {

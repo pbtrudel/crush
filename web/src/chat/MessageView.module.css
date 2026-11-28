@@ -131,9 +131,11 @@
 }
 
 .actions {
+  --copy-fade: 0.6;
+
   display: flex;
   justify-content: flex-end;
-  opacity: 0.6;
+  opacity: var(--copy-fade);
 }
 
 .message:hover .actions,

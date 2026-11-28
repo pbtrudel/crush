@@ -132,6 +132,62 @@ describe('Conversation', () => {
     expect(log.scrollTop).toBe(5600)
   })
 
+  // A streamed delta lands in the message view, not in the log: the log's
+  // own commit only sees the old height. The virtualizer's own measurement
+  // follows the React tick in jsdom, so the child's next DOM mutation is
+  // made directly after the streamed-source pass: only the observer's
+  // microtask can move the scroll top for it.
+  it('follows a child-only streamed tick while pinned', async () => {
+    vi.useFakeTimers()
+    const { rerender } = render(<Conversation {...props({ status: 'running' })} />)
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 4400, scrollHeight: 5000, clientHeight: 600 })
+    fireEvent.scroll(log)
+    rerender(
+      <Conversation
+        {...props({ status: 'running', messages: [messages[0], entry('m2', 'hi there, and more')] })}
+      />,
+    )
+    ;(log as { scrollHeight: number }).scrollHeight = 5600
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(streamedSourceInterval)
+      await Promise.resolve()
+    })
+    // Reset to the old end: the next mutation is the child-only tick.
+    log.scrollTop = 5000
+    const text = screen.getByText('hi there, and more')
+    await act(async () => {
+      text.textContent = 'hi there, and even more'
+      await Promise.resolve()
+    })
+    expect(log.scrollTop).toBe(5600)
+  })
+
+  it('stays put for a child-only streamed tick when the reader scrolled up', async () => {
+    vi.useFakeTimers()
+    const { rerender } = render(<Conversation {...props({ status: 'running' })} />)
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 1000, scrollHeight: 5000, clientHeight: 600 })
+    fireEvent.scroll(log)
+    rerender(
+      <Conversation
+        {...props({ status: 'running', messages: [messages[0], entry('m2', 'hi there, and more')] })}
+      />,
+    )
+    ;(log as { scrollHeight: number }).scrollHeight = 5600
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(streamedSourceInterval)
+      await Promise.resolve()
+    })
+    const text = screen.getByText('hi there, and more')
+    await act(async () => {
+      text.textContent = 'hi there, and even more'
+      await Promise.resolve()
+    })
+    expect(log.scrollTop).toBe(1000)
+    expect(screen.getByRole('button', { name: 'Back to bottom' })).toBeInTheDocument()
+  })
+
   it('keeps the old first message in place when an older page is prepended', () => {
     vi.useFakeTimers()
     const { rerender } = render(<Conversation {...props({ hasMore: true })} />)

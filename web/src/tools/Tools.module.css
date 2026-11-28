@@ -50,39 +50,43 @@
  * 5.55 and red 4.91 on the wash. The dark theme keeps the tokens it
  * already uses, which are legible on its cards. */
 .running {
+  --capsule-running-fg: color-mix(in srgb, var(--dsw-static-deepseek-500) 75%, var(--dsw-static-deepseek-900));
   background: var(--dsw-alias-bg-layer-2);
-  color: color-mix(in srgb, var(--dsw-static-deepseek-500) 75%, var(--dsw-static-deepseek-900));
+  color: var(--capsule-running-fg);
 }
 
 .done {
+  --capsule-done-fg: color-mix(in srgb, var(--dsw-static-green-500) 45%, var(--dsw-static-green-900));
   background: var(--dsw-alias-bg-layer-2);
-  color: color-mix(in srgb, var(--dsw-static-green-500) 45%, var(--dsw-static-green-900));
+  color: var(--capsule-done-fg);
 }
 
 .error {
+  --capsule-error-fg: color-mix(in srgb, var(--dsw-static-red-600) 80%, var(--dsw-static-red-900));
   background: var(--dsw-static-red-400-a12);
-  color: color-mix(in srgb, var(--dsw-static-red-600) 80%, var(--dsw-static-red-900));
+  color: var(--capsule-error-fg);
 }
 
 .interrupted {
+  --capsule-interrupted-fg: color-mix(in srgb, var(--dsw-static-amber-600) 55%, var(--dsw-static-amber-900));
   background: var(--dsw-alias-bg-layer-2);
-  color: color-mix(in srgb, var(--dsw-static-amber-600) 55%, var(--dsw-static-amber-900));
+  color: var(--capsule-interrupted-fg);
 }
 
 :global(html[data-ds-theme='dark']) .running {
-  color: var(--dsw-alias-state-business-primary);
+  --capsule-running-fg: var(--dsw-alias-state-business-primary);
 }
 
 :global(html[data-ds-theme='dark']) .done {
-  color: var(--dsw-alias-state-success-primary);
+  --capsule-done-fg: var(--dsw-alias-state-success-primary);
 }
 
 :global(html[data-ds-theme='dark']) .error {
-  color: var(--dsw-alias-state-error-primary);
+  --capsule-error-fg: var(--dsw-alias-state-error-primary);
 }
 
 :global(html[data-ds-theme='dark']) .interrupted {
-  color: var(--dsw-alias-state-warn-primary);
+  --capsule-interrupted-fg: var(--dsw-alias-state-warn-primary);
 }
 
 .body {
