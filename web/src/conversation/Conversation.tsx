@@ -1,9 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 import type { SessionStatus } from '../api/wire'
 import MessageView from '../chat/MessageView'
 import { isTurnActive } from '../chat/toolStatus'
+import { turnFooters } from '../chat/turns'
 import { useResults } from '../chat/useResults'
+import UsageSummary, { type Usage } from '../chat/UsageSummary'
 import type { WireMessage } from '../store/app'
 import styles from './Conversation.module.css'
 
@@ -16,6 +18,8 @@ export interface ConversationProps {
   error?: string | null
   // status is the session row's run state; it decides which turn is live.
   status?: SessionStatus
+  // usage is the session's context and cost, for the header.
+  usage?: Usage | null
   onLoadOlder(): void
 }
 
@@ -38,6 +42,7 @@ export default function Conversation({
   loadingOlder,
   error = null,
   status,
+  usage = null,
   onLoadOlder,
 }: ConversationProps) {
   const log = useRef<HTMLDivElement>(null)
@@ -52,6 +57,10 @@ export default function Conversation({
   // collected from the whole log. The index keeps its identity while no
   // result changes, so a streamed token re-renders the last message only.
   const results = useResults(messages)
+  // One footer per assistant message that ends a turn, rebuilt only when the
+  // log changes: every settled message gets the same string it had, so a
+  // streamed token renders the message it lands in and no other.
+  const footers = useMemo(() => turnFooters(messages), [messages])
   // Only the turn after the last user message can still be running; a call
   // left open in an earlier turn is interrupted, whatever the session does.
   const lastUser = messages.findLastIndex((entry) => entry.role === 'user')
@@ -92,6 +101,7 @@ export default function Conversation({
     <section className={styles.conversation} aria-label="Conversation">
       <header className={styles.header}>
         <h1 className={styles.title}>{title === '' ? untitled : title}</h1>
+        {usage !== null ? <UsageSummary usage={usage} /> : null}
       </header>
       <div ref={log} className={styles.log} data-testid="conversation-log" onScroll={trackScroll}>
         {hasMore ? (
@@ -115,6 +125,7 @@ export default function Conversation({
             message={message}
             results={results}
             turnActive={live && index > lastUser}
+            footer={footers.get(message.id) ?? null}
           />
         ))}
         <div ref={bottom} />

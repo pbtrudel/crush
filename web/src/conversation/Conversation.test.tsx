@@ -253,4 +253,52 @@ describe('Conversation', () => {
     )
     expect(scrollIntoView).toHaveBeenCalled()
   })
+
+  // The header carries the context ring, the tokens in use and the cost.
+  it('shows the session usage in its header', () => {
+    render(
+      <Conversation
+        sessionId="s1"
+        title="t"
+        messages={messages}
+        hasMore={false}
+        loadingOlder={false}
+        usage={{ promptTokens: 43800, completionTokens: 0, cost: 0.5, contextWindow: 200000 }}
+        onLoadOlder={vi.fn()}
+      />,
+    )
+    const summary = screen.getByTestId('usage-summary')
+    expect(summary).toHaveTextContent('43.8K tokens')
+    expect(summary).toHaveTextContent('$0.50')
+  })
+
+  it('reads the footer under the message that ends a turn', () => {
+    const turn: WireMessage[] = [
+      { id: 'u1', role: 'user', session_id: 's1', parts: [], created_at: 100, updated_at: 100 },
+      {
+        id: 'a1',
+        role: 'assistant',
+        session_id: 's1',
+        parts: [
+          { type: 'text', data: { text: 'Done.' } },
+          { type: 'finish', data: { reason: 'end_turn', time: 125 } },
+        ],
+        created_at: 101,
+        updated_at: 125,
+        model: 'claude-sonnet',
+      },
+    ]
+    render(
+      <Conversation
+        sessionId="s1"
+        title="t"
+        messages={turn}
+        hasMore={false}
+        loadingOlder={false}
+        onLoadOlder={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('claude-sonnet · 25s')).toBeInTheDocument()
+    expect(screen.getByText('claude-sonnet · 25s').closest('article')).toHaveAttribute('data-role', 'assistant')
+  })
 })

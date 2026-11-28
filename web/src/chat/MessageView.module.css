@@ -140,3 +140,12 @@
 .actions:focus-within {
   opacity: 1;
 }
+
+/* The footer is new text on the conversation surface, so it uses the
+   secondary label colour: the tertiary one is 3.73:1 on the light theme,
+   below AA, and its app-wide fix ships with the accessibility pass. */
+.footer {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}

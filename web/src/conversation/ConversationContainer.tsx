@@ -72,7 +72,22 @@ function SessionConversation({ sessionId, title, client, store }: SessionConvers
       .catch((cause: unknown) => store.failOlderPage(ticket, errorText(cause)))
   }, [client, sessionId, store])
 
-  const status = useStore(store, (state) => state.sessions.find((row) => row.id === sessionId)?.status)
+  // The row keeps its identity until a frame changes it, so this selector
+  // re-renders only on a real change.
+  const row = useStore(store, (state) => state.sessions.find((entry) => entry.id === sessionId))
+  const contextWindow = useStore(store, (state) => state.bootstrap?.model.context_window ?? 0)
+  const usage = useMemo(
+    () =>
+      row === undefined
+        ? null
+        : {
+            promptTokens: row.prompt_tokens ?? 0,
+            completionTokens: row.completion_tokens ?? 0,
+            cost: row.cost ?? 0,
+            contextWindow,
+          },
+    [row, contextWindow],
+  )
   // The bootstrap's MCP map keeps its identity until the next bootstrap,
   // so the server list is rebuilt only then: a fresh array on every render
   // would rebuild the tool environment and re-render every row in the log.
@@ -91,7 +106,8 @@ function SessionConversation({ sessionId, title, client, store }: SessionConvers
         hasMore={data?.hasMore ?? false}
         loadingOlder={data?.loadingOlder ?? false}
         error={data?.olderError ?? null}
-        status={status}
+        status={row?.status}
+        usage={usage}
         onLoadOlder={loadOlder}
       />
     </ToolEnvironmentProvider>

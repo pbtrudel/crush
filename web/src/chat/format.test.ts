@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatDuration, formatTokens } from './format'
+import { formatCost, formatDuration, formatTokens } from './format'
 
 describe('formatDuration', () => {
   it('writes seconds, then minutes and seconds', () => {
@@ -18,5 +18,14 @@ describe('formatTokens', () => {
     expect(formatTokens(43800)).toBe('43.8K')
     expect(formatTokens(200000)).toBe('200K')
     expect(formatTokens(1250000)).toBe('1.3M')
+  })
+})
+
+describe('formatCost', () => {
+  it('writes dollars to the cent and marks a sub-cent cost', () => {
+    expect(formatCost(0)).toBe('$0.00')
+    expect(formatCost(0.004)).toBe('<$0.01')
+    expect(formatCost(0.1234)).toBe('$0.12')
+    expect(formatCost(12.5)).toBe('$12.50')
   })
 })

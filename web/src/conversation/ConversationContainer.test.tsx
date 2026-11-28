@@ -198,6 +198,31 @@ describe('ConversationContainer', () => {
     expect(screen.getByRole('button', { name: 'Load older messages' })).toBeInTheDocument()
   })
 
+  // The header's usage is the session row's tokens and cost against the
+  // window of the model the bootstrap carries.
+  it('reads the usage from the session row and the model window', () => {
+    const { store } = setup({
+      bootstrap: { ...bootstrap, model: { ...bootstrap.model, context_window: 200000 } },
+      sessions: [row({ prompt_tokens: 42000, completion_tokens: 1800, cost: 0.1234 })],
+      selectedSessionId: 's1',
+      sessionData: { s1: data([message('m2', 'hi there')]) },
+    })
+    const summary = screen.getByTestId('usage-summary')
+    expect(summary).toHaveTextContent('43.8K tokens')
+    expect(summary).toHaveTextContent('22% of 200K')
+    expect(summary).toHaveTextContent('$0.12')
+
+    // A usage write arrives as the session row again, and the header follows.
+    act(() => {
+      store.applyFrame({
+        seq: 3,
+        type: 'session',
+        payload: { type: 'updated', payload: row({ prompt_tokens: 1000, completion_tokens: 0, cost: 0.5 }) },
+      })
+    })
+    expect(screen.getByTestId('usage-summary')).toHaveTextContent('$0.50')
+  })
+
   it('drops the loaded pages when a resync replaces the bootstrap', async () => {
     const { store } = setup(
       { sessions: [row()], selectedSessionId: 's1', sessionData: { s1: data([message('m2', 'hi there')], true) } },

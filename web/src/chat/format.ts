@@ -21,3 +21,15 @@ export function formatTokens(tokens: number): string {
   }
   return `${oneDecimal(tokens / 1_000_000)}M`
 }
+
+// formatCost writes a dollar cost to the cent; a cost under a cent that is
+// not zero says so instead of rounding to nothing.
+export function formatCost(cost: number): string {
+  if (!Number.isFinite(cost)) {
+    return '$0.00'
+  }
+  if (cost > 0 && cost < 0.01) {
+    return '<$0.01'
+  }
+  return `$${Math.max(0, cost).toFixed(2)}`
+}

@@ -3,8 +3,11 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { WireMessage } from '../api/wire'
+import design from '../theme/design-platform.css?raw'
+import { contrast, rgbOf, vars } from '../theme/contrast'
 import { ToolEnvironmentProvider } from '../tools/environment'
 import MessageView from './MessageView'
+import messageCss from './MessageView.module.css?raw'
 import { resultIndex } from './parts'
 import { streamedSourceInterval } from './useStreamedSource'
 
@@ -222,5 +225,70 @@ describe('MessageView', () => {
     )
     expect(screen.getByText(/\$ ls/)).toBeInTheDocument()
     expect(screen.getByText(/43.8K tokens/)).toBeInTheDocument()
+  })
+
+  it('shows the turn footer it is given', () => {
+    render(
+      <ToolEnvironmentProvider>
+        <MessageView
+          message={message([text('Done.'), finish('end_turn')])}
+          results={noResults}
+          turnActive={false}
+          footer="claude-sonnet · 25s"
+        />
+      </ToolEnvironmentProvider>,
+    )
+    expect(screen.getByText('claude-sonnet · 25s')).toBeInTheDocument()
+  })
+
+  it('draws no footer in a nested transcript', () => {
+    const { container } = view(message([text('Done.'), finish('end_turn')]))
+    render(
+      <ToolEnvironmentProvider>
+        <MessageView
+          message={message([text('Done.'), finish('end_turn')])}
+          results={noResults}
+          turnActive={false}
+          footer="claude-sonnet · 25s"
+          depth={1}
+        />
+      </ToolEnvironmentProvider>,
+    )
+    expect(screen.queryByText('claude-sonnet · 25s')).toBeNull()
+    // The top-level log in the same test still got no footer at all.
+    const article = container.querySelector('article') as HTMLElement
+    expect(article.lastElementChild?.querySelector('button')).not.toBeNull()
+  })
+})
+
+// rule reads one property of one class rule from a module stylesheet, the
+// way diff.test.ts does.
+function rule(sheet: string, property: 'color', name: string): string | null {
+  let found: string | null = null
+  const source = sheet.replace(/\/\*[\s\S]*?\*\//g, '')
+  for (const block of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = block[1].split(',').map((selector) => selector.trim())
+    if (!selectors.includes(`.${name}`)) {
+      continue
+    }
+    const value = new RegExp(`${property}:\\s*([^;]+);`).exec(block[2])
+    if (value) {
+      found = value[1].trim()
+    }
+  }
+  return found
+}
+
+describe('the turn footer colour', () => {
+  // The footer is new text on the conversation surface, so it has to reach
+  // AA in the light theme rather than inherit a label colour that does not.
+  it('is readable on the light conversation surface', () => {
+    const value = rule(messageCss, 'color', 'footer')
+    const sheet = vars(design, 'light')
+    expect(contrast(rgbOf(value ?? '', sheet), rgbOf('var(--dsw-alias-bg-base)', sheet))).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('names its colour in a class, never in a style attribute', () => {
+    expect(messageCss).not.toMatch(/\bstyle\s*=/)
   })
 })

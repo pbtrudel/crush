@@ -22,6 +22,9 @@ export interface MessageViewProps {
   turnActive: boolean
   // depth is how deep in a subagent tree the message sits; 0 is the log.
   depth?: number
+  // footer is the turn footer for a message that ends a turn: a primitive
+  // string, so a settled message keeps its memo across a streamed token.
+  footer?: string | null
 }
 
 interface DrawContext {
@@ -111,7 +114,7 @@ function draw(segment: Segment, context: DrawContext): ReactNode {
 // MessageView draws one message, its parts in the order they were written.
 // It is memoised: a streamed token makes a new object for the last message
 // only, and the result index keeps its identity until a result changes.
-function MessageView({ message, results, turnActive, depth = 0 }: MessageViewProps) {
+function MessageView({ message, results, turnActive, depth = 0, footer = null }: MessageViewProps) {
   const parts = messageParts(message)
   const finish = finishOf(parts)
   const list = segments(parts)
@@ -148,6 +151,7 @@ function MessageView({ message, results, turnActive, depth = 0 }: MessageViewPro
           <CopyButton text={copyText} label="Copy message" />
         </div>
       ) : null}
+      {footer !== null && footer !== '' && depth === 0 ? <div className={styles.footer}>{footer}</div> : null}
     </article>
   )
 }
