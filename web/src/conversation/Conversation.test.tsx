@@ -250,7 +250,7 @@ describe('Conversation', () => {
     expect(showAll).toHaveFocus()
   })
 
-  it('keeps the focused row mounted when following new messages past the window', async () => {
+  it('keeps the focused row mounted through a window blur while following', async () => {
     const longError = Array.from({ length: 50 }, (_, index) => `error ${index + 1}`).join('\n')
     const calling: WireMessage = {
       ...messages[1],
@@ -275,6 +275,8 @@ describe('Conversation', () => {
     const showAll = screen.getByRole('button', { name: 'Show all 50 lines' })
     showAll.focus()
     expect(showAll).toHaveFocus()
+    // A window blur leaves the focus inside the row; it must not unpin it.
+    fireEvent.blur(window)
 
     rerender(
       <ToolEnvironmentProvider>
@@ -285,6 +287,43 @@ describe('Conversation', () => {
     const log = screen.getByTestId('conversation-log')
     scrollState(log, { scrollTop: 1920, scrollHeight: 2520, clientHeight: 600 })
     fireEvent.scroll(log)
+    expect(screen.getByRole('button', { name: 'Show all 50 lines' })).toBe(showAll)
+    expect(showAll).toHaveFocus()
+  })
+
+  it('keeps the focused row mounted when an older page is prepended', async () => {
+    const longError = Array.from({ length: 50 }, (_, index) => `error ${index + 1}`).join('\n')
+    const calling: WireMessage = {
+      ...messages[1],
+      id: 'm1',
+      parts: [{ type: 'tool_call', data: { id: 'tc-1', name: 'bash', input: '{"command":"ls"}', finished: true } }],
+    }
+    const failed: WireMessage = {
+      ...messages[0],
+      id: 'm2',
+      role: 'tool',
+      parts: [
+        { type: 'tool_result', data: { tool_call_id: 'tc-1', name: 'bash', content: longError, is_error: true } },
+      ],
+    }
+    const older = Array.from({ length: 20 }, (_, index) => entry(`older-${index}`, `older reply ${index}`))
+    const { rerender } = render(
+      <ToolEnvironmentProvider>
+        <Conversation {...props({ messages: [calling, failed] })} />
+      </ToolEnvironmentProvider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /Bash/ }))
+    const showAll = screen.getByRole('button', { name: 'Show all 50 lines' })
+    showAll.focus()
+    expect(showAll).toHaveFocus()
+
+    // The prepend moves the row past the overscan window with no focus
+    // event to renumber it; its key is what keeps it mounted.
+    rerender(
+      <ToolEnvironmentProvider>
+        <Conversation {...props({ messages: [...older, calling, failed] })} />
+      </ToolEnvironmentProvider>,
+    )
     expect(screen.getByRole('button', { name: 'Show all 50 lines' })).toBe(showAll)
     expect(showAll).toHaveFocus()
   })
@@ -360,6 +399,67 @@ describe('Conversation', () => {
     const summary = screen.getByTestId('usage-summary')
     expect(summary).toHaveTextContent('43.8K tokens')
     expect(summary).toHaveTextContent('$0.50')
+  })
+
+  it('moves the footer to the last drawn assistant message of the turn', () => {
+    const turn: WireMessage[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        session_id: 's1',
+        parts: [{ type: 'text', data: { text: 'go' } }],
+        created_at: 100,
+        updated_at: 100,
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        session_id: 's1',
+        parts: [{ type: 'text', data: { text: 'working' } }],
+        created_at: 101,
+        updated_at: 101,
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        session_id: 's1',
+        parts: [{ type: 'finish', data: { reason: 'end_turn', time: 125 } }],
+        created_at: 125,
+        updated_at: 125,
+        model: 'claude-sonnet',
+      },
+    ]
+    render(<Conversation {...props({ messages: turn })} />)
+    // The message that ends the turn draws nothing, so it has no row.
+    expect(screen.getAllByRole('article')).toHaveLength(2)
+    const footer = screen.getByText('claude-sonnet · 25s')
+    expect(footer.closest('article')).toHaveAttribute('data-role', 'assistant')
+    expect(footer.closest('article')).toHaveTextContent('working')
+  })
+
+  it('drops the footer when no assistant message in the turn draws', () => {
+    const turn: WireMessage[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        session_id: 's1',
+        parts: [{ type: 'text', data: { text: 'go' } }],
+        created_at: 100,
+        updated_at: 100,
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        session_id: 's1',
+        parts: [{ type: 'finish', data: { reason: 'end_turn', time: 125 } }],
+        created_at: 125,
+        updated_at: 125,
+        model: 'claude-sonnet',
+      },
+    ]
+    render(<Conversation {...props({ messages: turn })} />)
+    expect(screen.queryByText('claude-sonnet · 25s')).toBeNull()
+    expect(screen.getAllByRole('article')).toHaveLength(1)
   })
 
   it('reads the footer under the message that ends a turn', () => {

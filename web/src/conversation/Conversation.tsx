@@ -1,12 +1,5 @@
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual'
-import {
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type FocusEvent,
-} from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { SessionStatus } from '../api/wire'
 import MessageView, { drawsNothing } from '../chat/MessageView'
@@ -49,6 +42,34 @@ interface Shape {
   keys: string[]
   scrollTop: number
   firstStart: number
+}
+
+// focusedIndex is the row index of the element that holds the focus inside
+// the log, or null when the focus is elsewhere or on the log itself. The
+// row's key is read from the live DOM and resolved against the current
+// keys, so an appended row, a prepended page or a filtered message cannot
+// leave the index stale.
+function focusedIndex(element: HTMLElement | null, keys: readonly string[]): number | null {
+  if (element === null) {
+    return null
+  }
+  const active = document.activeElement
+  if (!(active instanceof HTMLElement) || !element.contains(active)) {
+    return null
+  }
+  const row = active.closest<HTMLElement>('[data-key]')
+  if (row === null || !element.contains(row)) {
+    return null
+  }
+  const key = row.dataset.key
+  if (key === undefined) {
+    return null
+  }
+  if (key === edgeKey) {
+    return 0
+  }
+  const index = keys.indexOf(key)
+  return index === -1 ? null : index + 1
 }
 
 export default function Conversation(props: ConversationProps) {
@@ -106,45 +127,42 @@ function Log({
   // renders the message it lands in and no other.
   const results = useResults(messages)
   // One footer per assistant message that ends a turn, rebuilt only when
-  // the log changes: every settled message gets the same string it had.
-  const footers = useMemo(() => turnFooters(messages), [messages])
+  // the log changes: every settled message gets the same string it had. A
+  // message the view does not draw cannot carry its turn's footer, so the
+  // footer moves to the last earlier assistant message that draws.
+  const footers = useMemo(
+    () => turnFooters(messages, (message) => !drawsNothing(message)),
+    [messages],
+  )
   // Only messages that draw something become rows: results belong to their
   // call, hidden text and a plain finish draw nothing, and an empty row
   // would still cost eight pixels and a message's height estimate.
   const drawn = useMemo(() => messages.filter((entry) => !drawsNothing(entry)), [messages])
   const keys = useMemo(() => drawn.map((entry) => entry.id), [drawn])
+  // keysRef is the latest row keys for the range extractor, which reads the
+  // focused row's key from the DOM and finds where that row is now.
+  const keysRef = useRef(keys)
+  keysRef.current = keys
   // Only the turn after the last user message can still be running.
   const lastUser = drawn.findLastIndex((entry) => entry.role === 'user')
   const live = isTurnActive(status)
 
-  // focusedRow is the data-index of the row that holds the focus. React's
-  // onFocus/onBlur are focusin/focusout and bubble from a row's control to
-  // the log. The virtualizer unmounts rows outside its window, which would
-  // take the reader's focus with them; the range extractor keeps this one.
-  const focusedRow = useRef<number | null>(null)
-
-  const trackFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
-    const target = event.target
-    const row = target instanceof HTMLElement ? target.closest<HTMLElement>('[data-index]') : null
-    const index = row?.dataset.index
-    focusedRow.current = index === undefined ? null : Number(index)
-  }, [])
-
-  const trackBlur = useCallback(() => {
-    focusedRow.current = null
-  }, [])
-
-  const rangeExtractor = useCallback((range: Range) => {
-    const indexes = defaultRangeExtractor(range)
-    const focused = focusedRow.current
-    if (focused === null || focused < 0 || focused >= range.count || indexes.includes(focused)) {
-      return indexes
-    }
-    // Sorted and unique: the virtualizer reads rows back by position.
-    const merged = [...indexes, focused]
-    merged.sort((a, b) => a - b)
-    return merged
-  }, [])
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      const indexes = defaultRangeExtractor(range)
+      const focused = focusedIndex(log.current, keysRef.current)
+      if (focused === null || focused < 0 || focused >= range.count || indexes.includes(focused)) {
+        return indexes
+      }
+      // Sorted and unique: the virtualizer reads rows back by position.
+      const merged = [...indexes, focused]
+      merged.sort((a, b) => a - b)
+      return merged
+    },
+    // The extractor reads the ref, but a new row list must re-run it even
+    // when the row count happens to stay the same.
+    [keys],
+  )
 
   const virtualizer = useVirtualizer({
     count: drawn.length + 1,
@@ -227,8 +245,6 @@ function Log({
           // Programmatically focusable, so Back to bottom can hand it the
           // focus before the button disappears.
           tabIndex={-1}
-          onFocus={trackFocus}
-          onBlur={trackBlur}
           onScroll={trackScroll}
         >
           {/* The spacer's height and each row's offset are geometry the
@@ -241,6 +257,7 @@ function Log({
                   key={item.key}
                   ref={virtualizer.measureElement}
                   data-index={item.index}
+                  data-key={item.key}
                   className={styles.row}
                   style={{ transform: `translateY(${item.start}px)` }}
                 >

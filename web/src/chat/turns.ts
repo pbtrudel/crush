@@ -18,16 +18,30 @@ import { finishOf, messageParts } from './parts'
 // timing the step the reader can see. A turn still running has no finish,
 // and so no footer. Compaction summaries draw none either, the way the TUI
 // suppresses them (internal/ui/chat/messages.go ShouldShowAssistantInfo).
-export function turnFooters(messages: WireMessage[]): Map<string, string> {
+//
+// draws says whether the view draws the message. The footer belongs to the
+// last assistant message of its turn that draws: when the message holding
+// the finish renders nothing (a finish part alone), the footer moves back
+// to the last earlier assistant message that draws, and is dropped when the
+// turn drew no assistant message at all.
+export function turnFooters(
+  messages: WireMessage[],
+  draws: (message: WireMessage) => boolean = () => true,
+): Map<string, string> {
   const out = new Map<string, string>()
   let turnStart: number | null = null
+  let lastDrawn: string | null = null
   for (const message of messages) {
     if (message.role === 'user') {
       turnStart = message.created_at
+      lastDrawn = null
       continue
     }
     if (message.role !== 'assistant' || message.is_summary_message === true) {
       continue
+    }
+    if (draws(message)) {
+      lastDrawn = message.id
     }
     const finish = finishOf(messageParts(message))
     if (finish === null || finish.reason === 'tool_use') {
@@ -45,7 +59,11 @@ export function turnFooters(messages: WireMessage[]): Map<string, string> {
       }
     }
     if (pieces.length > 0) {
-      out.set(message.id, pieces.join(' · '))
+      // A footer on a message the view does not draw would never be read.
+      const target = draws(message) ? message.id : lastDrawn
+      if (target !== null) {
+        out.set(target, pieces.join(' · '))
+      }
     }
   }
   return out
