@@ -222,10 +222,16 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       // upserted by id, which is idempotent for a frame a snapshot echoed.
       const envelope = frame.payload as MessageEvent
       const id = envelope.payload.session_id
-      if (!hasSession(state, id)) {
+      // Only a snapshot opens a session's data. A message counts only while
+      // the tab holds that page: one the gateway had in flight when the tab
+      // unsubscribed must not put back what releaseSession dropped, and one
+      // that beats the snapshot is in the snapshot already. Data without a
+      // row cannot exist — the snapshot that opens it needs the row — so this
+      // also keeps frames for an unlisted session out.
+      const current = state.sessionData[id]
+      if (current === undefined) {
         return state
       }
-      const current = state.sessionData[id] ?? emptySessionData
       const messages =
         envelope.type === 'deleted'
           ? current.messages.filter((message) => message.id !== envelope.payload.id)
