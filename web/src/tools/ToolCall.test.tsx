@@ -117,7 +117,17 @@ describe('ToolCall', () => {
     await userEvent.click(screen.getByRole('button', { name: /mystery_tool/ }))
     const input = screen.getByRole('group', { name: 'Input' })
     expect(input.querySelector('pre')?.textContent).toHaveLength(maxOutputChars)
-    expect(within(input).getByRole('button', { name: /^Show all \(/ })).toBeInTheDocument()
+    expect(within(input).getByRole('button', { name: /^Show all \(\d+ K characters\)$/ })).toBeInTheDocument()
+  })
+
+  it('clips a lined input to 40 lines, not to its first 20000 characters', async () => {
+    const entries = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`k${index}`, 'z'.repeat(300)]))
+    const lined: ToolCallPart = { id: 'tc-3', name: 'mystery_tool', input: JSON.stringify(entries), finished: true }
+    row({ call: lined })
+    await userEvent.click(screen.getByRole('button', { name: /mystery_tool/ }))
+    const input = screen.getByRole('group', { name: 'Input' })
+    expect(input.querySelector('pre')?.textContent?.split('\n')).toHaveLength(40)
+    expect(within(input).getByRole('button', { name: 'Show all 102 lines' })).toBeInTheDocument()
   })
 
   it('keeps a revealed output across a remount', async () => {
@@ -145,7 +155,20 @@ describe('OutputBlock', () => {
   it('clips a single huge line by characters', () => {
     const { container } = render(<OutputBlock text={'x'.repeat(100 * 1024)} />)
     expect(container.querySelector('pre')?.textContent).toHaveLength(maxOutputChars)
-    expect(screen.getByRole('button', { name: 'Show all (100 KB)' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show all (103 K characters)' })).toBeInTheDocument()
+  })
+
+  it('clips by lines before characters', () => {
+    const text = Array.from({ length: 500 }, () => 'x'.repeat(100)).join('\n')
+    const { container } = render(<OutputBlock text={text} />)
+    expect(container.querySelector('pre')?.textContent?.split('\n')).toHaveLength(40)
+    expect(screen.getByRole('button', { name: 'Show all 500 lines' })).toBeInTheDocument()
+  })
+
+  it('never ends the cut on half a surrogate pair', () => {
+    const text = `${'a'.repeat(maxOutputChars - 1)}😀b`
+    const { container } = render(<OutputBlock text={text} />)
+    expect(container.querySelector('pre')?.textContent).toBe('a'.repeat(maxOutputChars - 1))
   })
 
   it('does not count a trailing newline as a line', () => {
