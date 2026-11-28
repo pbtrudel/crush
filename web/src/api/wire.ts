@@ -90,8 +90,12 @@ export const messageSchema = z
     parts: z.array(z.object({ type: z.string(), data: z.unknown() })),
     created_at: z.number(),
     updated_at: z.number(),
-    // The model that wrote an assistant message, for the turn footer.
+    // The model that wrote an assistant message, for the turn footer, the
+    // name the gateway shows it by when it has one, and whether the message
+    // is a compaction summary, which draws no turn footer.
     model: z.string().optional(),
+    model_name: z.string().optional(),
+    is_summary_message: z.boolean().optional(),
     provider: z.string().optional(),
   })
   .passthrough()
