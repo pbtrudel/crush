@@ -429,10 +429,11 @@ func (g *Gateway) keepAlive(ctx context.Context, ws *websocket.Conn) {
 }
 
 // readLoop reads the client's messages. A subscribe or unsubscribe is handled
-// here; its reply travels the connection's queue, so the single writer loop
-// stays the only thing writing to the socket. Liveness is keepAlive's job: a
-// read that never answers a ping ends there, so the read itself has no
-// deadline of its own.
+// here; its reply travels the connection's queue, so the writer loop stays the
+// only goroutine writing frames to the socket. keepAlive writes protocol pings
+// on the same socket, which the library serialises against the writer's
+// frames. Liveness is keepAlive's job: a read that never answers a ping ends
+// there, so the read itself has no deadline of its own.
 func (g *Gateway) readLoop(ctx context.Context, cancel context.CancelFunc, c *conn, ws *websocket.Conn) {
 	defer cancel()
 	for {
@@ -464,6 +465,13 @@ func (g *Gateway) readLoop(ctx context.Context, cancel context.CancelFunc, c *co
 // read runs is buffered for it; the snapshot and the buffer are then flushed
 // together, snapshot first. Without the reservation a frame could arrive
 // before the snapshot that should have carried it.
+//
+// This runs on the read goroutine, so it also blocks the client's messages
+// while the snapshot is built, and a pong that arrives then is not read until
+// the handler returns: a snapshot slower than the keep-alive's ping wait gets
+// no answer and the tab is dropped. That is why the snapshot stays small, one
+// page of messages from the pager instead of the whole transcript, plus the
+// edited files and the queued prompts.
 func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string) {
 	if sessionID == "" {
 		g.enqueueError(c, "", "missing_session", "subscribe needs a session_id")
