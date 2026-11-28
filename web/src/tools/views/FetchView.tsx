@@ -4,6 +4,19 @@ import OutputBlock, { ToolSection } from '../OutputBlock'
 import styles from '../Tools.module.css'
 import type { ToolBodyProps, ToolView } from '../view'
 
+// unwrapMarkdown removes the fence the fetch tool puts around a page it
+// converted: for format markdown it answers "```\n" + content + "\n```"
+// (internal/agent/tools/fetch.go). Only that first line and one trailing
+// fence go, so a fenced block the page wrote itself stays. A page cut at the
+// size limit can lose the closing fence, so it is optional.
+function unwrapMarkdown(content: string): string {
+  if (!content.startsWith('```\n')) {
+    return content
+  }
+  const body = content.slice('```\n'.length)
+  return body.endsWith('\n```') ? body.slice(0, -'\n```'.length) : body
+}
+
 // FetchBody shows what a page answered. Markdown and text go through the
 // safe renderer, which shows raw HTML as text and keeps every link to an
 // absolute web or mail address; an HTML answer is shown as its source.
@@ -22,12 +35,13 @@ function FetchBody({ call, input, result }: ToolBodyProps) {
   }
   // The tool lowercases the format itself, so the view reads it the same
   // way: an answer in HTML is shown as the source the page sent.
-  if (stringField(input, 'format').toLowerCase() === 'html') {
+  const format = stringField(input, 'format').toLowerCase()
+  if (format === 'html') {
     return <OutputBlock text={result.content} revealKey={`${call.id}:source`} />
   }
   return (
     <div className={styles.document}>
-      <Markdown source={result.content} />
+      <Markdown source={format === 'markdown' ? unwrapMarkdown(result.content) : result.content} />
     </div>
   )
 }

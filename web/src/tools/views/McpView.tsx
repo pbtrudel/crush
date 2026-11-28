@@ -22,7 +22,8 @@ export function splitMcpName(name: string, servers: readonly string[]): { server
 // through the output block, which clips what a server can send and keeps
 // the reveal across a remount. An image answer is named instead of drawn:
 // the client receives the media type but never the payload, so there is no
-// address to load.
+// address to load. The text beside an image is what the server said about
+// it, so it is shown under the note rather than dropped.
 function McpBody({ call, input, result }: ToolBodyProps) {
   return (
     <>
@@ -33,7 +34,12 @@ function McpBody({ call, input, result }: ToolBodyProps) {
         />
       </ToolSection>
       {result === undefined ? null : result.mimeType.startsWith('image/') ? (
-        <p className={styles.note}>The server answered with an image ({result.mimeType}).</p>
+        <>
+          <p className={styles.note}>The server answered with an image ({result.mimeType}).</p>
+          {result.content === '' ? null : (
+            <OutputBlock text={result.content} revealKey={`${call.id}:output`} />
+          )}
+        </>
       ) : (
         <ToolSection label={result.isError ? 'Error' : 'Output'}>
           <OutputBlock
