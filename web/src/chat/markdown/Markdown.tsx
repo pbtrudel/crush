@@ -18,6 +18,12 @@ export interface MarkdownProps {
 // and the furthest tails of adversarial input make a parser quadratic.
 export const maxMarkdownSource = 32 * 1024
 
+// deepPrefix finds a marker run that would nest past the depth cap: 65 or
+// more quote, bullet or ordered-list markers at the start of a line. The
+// parser crawls such a run long before a tree exists to measure it, so the
+// source renders as text instead of being parsed at all.
+const deepPrefix = /^[ \t]*(?:>[ \t]*|(?:[-+*]|\d{1,9}[.)])[ \t]+){65,}/m
+
 interface RenderContext {
   definitions: Map<string, Definition>
 }
@@ -33,18 +39,30 @@ function Markdown({ source }: MarkdownProps) {
   }
   return (
     <MarkdownBoundary source={source}>
-      <div className={styles.markdown}>{children(tree.children, { definitions })}</div>
+      <MarkdownTree tree={tree} definitions={definitions} />
     </MarkdownBoundary>
   )
 }
 
 export default memo(Markdown)
 
+interface MarkdownTreeProps {
+  tree: Root
+  definitions: Map<string, Definition>
+}
+
+// MarkdownTree walks the parsed tree. It is a component of its own so the
+// boundary above it can catch a renderer that throws: a walk run here is
+// inside the boundary's subtree, unlike one run in Markdown's own render.
+function MarkdownTree({ tree, definitions }: MarkdownTreeProps) {
+  return <div className={styles.markdown}>{children(tree.children, { definitions })}</div>
+}
+
 // parseBounded answers the tree to render, or null when the source must
-// show as text: too long to parse, too deep to walk, or a parser that
-// threw.
+// show as text: too long to parse, nested past the depth cap before any
+// tree exists to measure, too deep once parsed, or a parser that threw.
 function parseBounded(source: string): Root | null {
-  if (source.length > maxMarkdownSource) {
+  if (source.length > maxMarkdownSource || deepPrefix.test(source)) {
     return null
   }
   try {

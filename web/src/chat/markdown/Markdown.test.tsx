@@ -149,4 +149,34 @@ describe('Markdown', () => {
     expect(container.textContent).toBe(source)
     expect(container.querySelector('p')).toBeNull()
   })
+
+  // A marker run nests one level per marker, and the parser crawls it long
+  // before any depth check can help. The pre-scan skips the parse, so these
+  // render as text in a few milliseconds instead of blocking for minutes.
+  it.each([
+    ['a bullet run', '* '.repeat(16000) + 'x'],
+    ['an ordered run', '1. '.repeat(10922)],
+    ['a quote-bullet run', '> - '.repeat(8192)],
+  ])('renders %s as plain text without parsing it', (_name, source) => {
+    const start = performance.now()
+    const { container } = render(<Markdown source={source} />)
+    const elapsed = performance.now() - start
+    expect(elapsed).toBeLessThan(100)
+    expect(container.textContent).toBe(source)
+    expect(container.querySelector('ul')).toBeNull()
+    expect(container.querySelector('ol')).toBeNull()
+    expect(container.querySelector('blockquote')).toBeNull()
+  })
+
+  // The pre-scan must not swallow ordinary formatting: a nested list, a
+  // thematic break and a dotted version still reach the renderer.
+  it('still formats a realistic nested list, rule and version', () => {
+    const { container } = render(
+      <Markdown source={'- one\n  - two\n    - three\n\n----\n\nVersion 1.1.1.1 is out.'} />,
+    )
+    expect(container.querySelectorAll('li')).toHaveLength(3)
+    expect(container.querySelector('hr')).not.toBeNull()
+    expect(container.textContent).toContain('Version 1.1.1.1 is out.')
+    expect(container.querySelector('p')).not.toBeNull()
+  })
 })
