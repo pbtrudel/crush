@@ -96,8 +96,13 @@
   font-weight: 600;
 }
 
+/* Faint text is a colour rather than an opacity: opacity blends the text
+   into whatever sits behind it and takes a passing colour under AA. The
+   dim grey is the same one ansi-fg-dim uses, pinned in ansi.test.ts. A
+   span that also names a colour keeps that colour, because the fg rules
+   come after this one. */
 .dim {
-  opacity: 0.7;
+  color: var(--ansi-fg-dim);
 }
 
 .italic {

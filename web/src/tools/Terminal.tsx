@@ -46,6 +46,13 @@ function countLines(text: string): number {
   return lines
 }
 
+// trimEnd drops the one newline a command leaves behind. A terminal shows
+// the cursor on the next row, not a row of its own, and a card must not end
+// in a blank line or call a full maxLines of output clipped.
+function trimEnd(text: string): string {
+  return text.endsWith('\n') ? text.slice(0, -1) : text
+}
+
 // clipLines cuts output to maxLines lines and maxOutputChars characters
 // before it is parsed. Parsing is a regular expression over the whole
 // string and a tool result can be megabytes, so the scan stops at the
@@ -88,18 +95,19 @@ export default function Terminal({ command = '', output, maxLines = 200, revealK
   const all = revealKey === undefined ? localAll : revealed
   // The clip is memoised by the output, and the parse by the clipped text,
   // so a re-render costs neither scan nor regex.
+  const text = useMemo(() => trimEnd(output), [output])
   const shown = useMemo(
     () =>
       all
-        ? { text: output, lines: 0, clipped: false, charClipped: false }
-        : clipLines(output, maxLines),
-    [all, output, maxLines],
+        ? { text, lines: 0, clipped: false, charClipped: false }
+        : clipLines(text, maxLines),
+    [all, text, maxLines],
   )
   const lines = useMemo(() => parseAnsi(shown.text), [shown.text])
   // The label names the limit that cut the text. The character cap runs
   // last, so where both apply it is the one to say.
   const showAll = shown.charClipped
-    ? `Show all (${Math.ceil(output.length / 1000)} K characters)`
+    ? `Show all (${Math.ceil(text.length / 1000)} K characters)`
     : `Show all ${shown.lines} lines`
   return (
     <div className={styles.terminal}>

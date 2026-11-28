@@ -25,7 +25,9 @@ function BashBody({ call, input, result }: ToolBodyProps) {
           <OutputBlock text={result.content} tone="error" revealKey={`${call.id}:error`} />
         </ToolSection>
       ) : null}
-      {boolField(metadata, 'background') && shellId !== '' ? (
+      {/* A job still running has no exit code; once the command has one it
+          has finished and the note would be stale. */}
+      {boolField(metadata, 'background') && shellId !== '' && exit === null ? (
         <p className={styles.note}>Running in the background as job {shellId}</p>
       ) : null}
       {exit !== null ? <ExitCode code={exit} /> : null}

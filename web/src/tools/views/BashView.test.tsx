@@ -102,6 +102,21 @@ describe('the bash view', () => {
     expect(screen.getByText('line-250')).toBeInTheDocument()
   })
 
+  it('drops the one newline a command ends with', async () => {
+    const output = `${Array.from({ length: 200 }, (_, index) => `line-${index + 1}`).join('\n')}\n`
+    const { container } = await open(result({ output }))
+    // A full 200 lines plus the newline a command leaves behind is not
+    // clipped, and the card does not end in a blank row.
+    expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
+    expect(container.querySelector('pre')?.children).toHaveLength(200)
+  })
+
+  it('hides the job note once the command has an exit code', async () => {
+    await open(result({ output: 'done', background: true, shell_id: '007', exit_code: 0 }))
+    expect(screen.getByText('exit 0')).toBeInTheDocument()
+    expect(screen.queryByText(/Running in the background/)).toBeNull()
+  })
+
   it('caps one enormous line and parses only what it shows', async () => {
     const output = 'x'.repeat(50000)
     const { container } = await open(result({ output }))

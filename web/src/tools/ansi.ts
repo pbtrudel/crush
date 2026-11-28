@@ -14,17 +14,29 @@ interface SgrState {
   bg: string | null
 }
 
-// sequence matches every escape a terminal consumes: CSI (colours, cursor
-// moves, erases), OSC (titles, hyperlinks) ended by BEL or ST, and the
-// charset designations (ESC ( B) and the other two-byte escapes. Only
-// CSI ... m changes the style; the rest vanish.
-const sequence = /\x1b\[([0-9;:?]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[()*+][0-9A-Za-z]|\x1b[@-Z\\-_]/g
+// sequence matches every escape a terminal consumes, in the order that
+// keeps their bodies apart: a CSI (parameters, intermediates, a final
+// byte), an OSC (a title or a hyperlink, ended by BEL, ST or the C1 ST),
+// one of the other string sequences (DCS, SOS, PM, APC), and every other
+// escape (intermediates and one final byte). Only an SGR CSI changes the
+// style; the rest vanish.
+const sequence =
+  /\x1b\[([0-?]*)([ -/]*)([@-~])|\x1b\][^\x07\x1b\n\u009c]*(?:\x07|\x1b\\|\u009c)?|\x1b[P_^X][^\x1b]*(?:\x1b\\)?|\x1b[ -/]*[0-~]/g
 
-// controls removes the bytes no terminal draws. A sequence the regex did
-// not complete is cut at the escape: output clipped mid-escape must not
-// leave its parameters in the text. Tab stays; the line break and the
-// carriage return are already split out.
-const controls = /\x1b\[?[0-9;:?]*|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
+// sgr is the parameter string of a real SGR. Anything else that ends in m
+// (a keyboard report, a mode set) is an escape to strip, not a style.
+const sgr = /^[0-9;:]*$/
+
+// partialCsi is a CSI the output was cut inside of. The scanner needs its
+// final byte, which never arrived, so the escape that opened it goes with
+// the parameters it had read.
+const partialCsi = /\x1b\[[0-?]*[ -/]*$/
+
+// controls removes the bytes no terminal draws: a bare escape the scanner
+// could not pair with a sequence, and the C0 and C1 controls. A lone
+// escape never swallows the digits after it. Tab stays; the line break and
+// the carriage return are already split out.
+const controls = /\x1b|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0080-\u009f]/g
 
 function classesOf(state: SgrState): string[] {
   const out: string[] = []
@@ -59,13 +71,21 @@ function reset(state: SgrState) {
 }
 
 function applySgr(state: SgrState, params: string) {
-  const codes = params === '' ? [0] : params.split(/[;:]/).map((code) => Number(code) || 0)
-  for (let index = 0; index < codes.length; index += 1) {
-    const code = codes[index]
+  // Semicolons separate the parameters; a colon groups sub-parameters of
+  // one parameter, and only its first value is read here.
+  const groups = params === '' ? ['0'] : params.split(';')
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index]
+    const colon = group.indexOf(':')
+    const code = Number(colon === -1 ? group : group.slice(0, colon)) || 0
     if (code === 38 || code === 48) {
-      // Extended colour: 5;n or 2;r;g;b. The parameters are consumed and
-      // the colour dropped; the default colour reads on either theme.
-      index += codes[index + 1] === 5 ? 2 : codes[index + 1] === 2 ? 4 : 0
+      // Extended colour: 5;n or 2;r;g;b, or the colon form that carries its
+      // own sub-parameters. Either way the colour is dropped and the
+      // default colour, which reads on either theme, stays.
+      if (colon !== -1) {
+        continue
+      }
+      index += Number(groups[index + 1]) === 5 ? 2 : Number(groups[index + 1]) === 2 ? 4 : 0
       continue
     }
     if (code === 0) {
@@ -77,7 +97,8 @@ function applySgr(state: SgrState, params: string) {
     } else if (code === 3) {
       state.italic = true
     } else if (code === 4) {
-      state.underline = true
+      // 4:n turns the underline on for every n but zero.
+      state.underline = colon === -1 || Number(group.slice(colon + 1)) !== 0
     } else if (code === 22) {
       state.bold = false
       state.dim = false
@@ -101,30 +122,14 @@ function applySgr(state: SgrState, params: string) {
   }
 }
 
-// lastSegment is the last carriage-return segment of a line that holds
-// text. A terminal rewinds to column 0 at a bare return, but what it wrote
-// before stays on the screen until something overwrites it, so a progress
-// line that ends in a return keeps its last write.
-function lastSegment(piece: string): string {
-  if (!piece.includes('\r')) {
-    return piece
-  }
-  const segments = piece.split('\r')
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    if (segments[index] !== '') {
-      return segments[index]
-    }
-  }
-  return ''
-}
-
 // parseAnsi turns terminal output into lines of styled spans.
 export function parseAnsi(input: string): AnsiSpan[][] {
   const lines: AnsiSpan[][] = [[]]
   const state: SgrState = { bold: false, dim: false, italic: false, underline: false, fg: null, bg: null }
-  // A return whose rewrite has not arrived yet. The text before it stays
-  // visible, and the first text after it replaces the line, even across
-  // the escapes a progress line prints between its updates.
+  // A return whose rewrite has not arrived yet. What the line already holds
+  // stays visible until something is written after the return, and that
+  // write starts at column 0. The flag survives the escapes a progress line
+  // prints between its updates.
   let rewind = false
   const push = (chunk: string) => {
     const pieces = chunk.split('\n')
@@ -133,30 +138,34 @@ export function parseAnsi(input: string): AnsiSpan[][] {
         lines.push([])
         rewind = false
       }
-      if (piece === '') {
-        return
-      }
       const line = lines[lines.length - 1]
-      const returns = piece.includes('\r')
-      if (rewind || returns) {
-        line.length = 0
-        rewind = false
-      }
-      const text = lastSegment(piece).replace(controls, '')
-      if (text !== '') {
-        line.push({ text, classes: classesOf(state) })
-      }
-      if (piece.endsWith('\r')) {
-        rewind = true
-      }
+      const segments = piece.includes('\r') ? piece.split('\r') : [piece]
+      segments.forEach((segment, position) => {
+        if (position > 0) {
+          // A return only rewinds. It never clears the line by itself: a
+          // progress line that ends in one keeps what it printed.
+          rewind = true
+        }
+        if (segment === '') {
+          return
+        }
+        if (rewind) {
+          line.length = 0
+          rewind = false
+        }
+        const text = segment.replace(controls, '')
+        if (text !== '') {
+          line.push({ text, classes: classesOf(state) })
+        }
+      })
     })
   }
-  const source = input.replace(/\r\n/g, '\n')
+  const source = input.replace(/\r\n/g, '\n').replace(partialCsi, '')
   let last = 0
   for (const match of source.matchAll(sequence)) {
     push(source.slice(last, match.index))
     last = (match.index ?? 0) + match[0].length
-    if (match[2] === 'm') {
+    if (match[3] === 'm' && sgr.test(match[1] ?? '')) {
       applySgr(state, match[1] ?? '')
     }
   }
