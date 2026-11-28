@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import { memoryStorage } from '../app/storage'
+import SessionRow from '../sidebar/SessionRow'
 import { setMediaQueryMatches } from '../test/mediaQueries'
 import AppFrame from './AppFrame'
 
@@ -179,6 +180,49 @@ describe('AppFrame', () => {
       addSpy.mockRestore()
       removeSpy.mockRestore()
     }
+  })
+
+  it('leaves the drawer open when Escape only cancels a rename', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    const { container } = render(
+      <AppFrame
+        sidebar={
+          <SessionRow
+            row={{
+              id: 's1',
+              parent_session_id: '',
+              title: 'Port the parser',
+              message_count: 2,
+              updated_at: 20,
+              status: 'idle',
+            }}
+            selected={false}
+            unread={false}
+            onSelect={vi.fn()}
+            onRename={vi.fn()}
+            onDelete={vi.fn()}
+            onCopyId={vi.fn()}
+            onOpenInTerminal={vi.fn()}
+          />
+        }
+      >
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    await user.click(screen.getByLabelText('Rename session'))
+    expect(screen.getByLabelText('Session title')).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+    // The rename box consumed the key: the drawer is still open and the row
+    // is back to its title.
+    expect(frame?.getAttribute('data-drawer')).toBe('true')
+    expect(screen.queryByLabelText('Session title')).toBeNull()
+
+    await user.keyboard('{Escape}')
+    expect(frame?.getAttribute('data-drawer')).toBe('false')
   })
 
   it('traps Tab inside the drawer', async () => {

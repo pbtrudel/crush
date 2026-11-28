@@ -81,6 +81,17 @@ describe('SessionRow', () => {
     expect(screen.getByText('Port the parser')).toBeInTheDocument()
   })
 
+  it('marks an Escape it handled as taken', async () => {
+    render(<SessionRow {...props()} />)
+    await userEvent.click(screen.getByLabelText('Rename session'))
+    const input = screen.getByLabelText('Session title')
+    // A listener above the row (the narrow drawer listens on the window) must
+    // be able to tell that the key was spent on the draft. fireEvent reports
+    // whether the event survived un-cancelled.
+    expect(fireEvent.keyDown(input, { key: 'Escape' })).toBe(false)
+    expect(screen.queryByLabelText('Session title')).toBeNull()
+  })
+
   it('opens the draft at the title the row has now', async () => {
     const onRename = vi.fn()
     const { rerender } = render(<SessionRow {...props({ onRename })} />)

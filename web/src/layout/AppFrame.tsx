@@ -178,6 +178,11 @@ export default function AppFrame({ sidebar, right, status, children, storage }: 
     const firstControl = controls()[0]
     ;(firstControl ?? element).focus()
     const onKey = (event: KeyboardEvent) => {
+      // A control inside the drawer (the rename box) can handle Escape
+      // itself; the drawer must not close under it.
+      if (event.defaultPrevented) {
+        return
+      }
       if (event.key === 'Escape') {
         closeDrawer()
         return
