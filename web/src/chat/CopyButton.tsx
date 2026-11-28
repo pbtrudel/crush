@@ -23,18 +23,26 @@ export default function CopyButton({ text, label }: CopyButtonProps) {
     return () => window.clearTimeout(timer)
   }, [state])
   return (
-    <button
-      type="button"
-      className={styles.copy}
-      aria-label={label}
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(
-          () => setState('copied'),
-          () => setState('failed'),
-        )
-      }}
-    >
-      {captions[state]}
-    </button>
+    <>
+      <button
+        type="button"
+        className={styles.copy}
+        aria-label={label}
+        onClick={() => {
+          void navigator.clipboard?.writeText(text).then(
+            () => setState('copied'),
+            () => setState('failed'),
+          )
+        }}
+      >
+        {captions[state]}
+      </button>
+      {/* The button keeps its contextual name, which would hide the visible
+       * result from a screen reader. The polite region carries the result
+       * instead; it is empty until there is one to announce. */}
+      <span className={styles.status} role="status">
+        {state === 'idle' ? '' : captions[state]}
+      </span>
+    </>
   )
 }

@@ -40,6 +40,6 @@ describe('CodeBlock', () => {
     render(<CodeBlock code="go test ./..." language="sh" />)
     screen.getByRole('button', { name: 'Copy code' }).click()
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('go test ./...'))
-    expect(await screen.findByText('Copied')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Copied'))
   })
 })

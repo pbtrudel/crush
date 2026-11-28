@@ -21,10 +21,14 @@ describe('CopyButton', () => {
       screen.getByRole('button', { name: 'Copy code' }).click()
     })
     expect(screen.getByRole('button', { name: 'Copy code' })).toHaveTextContent(/^Copied$/)
+    // The button keeps its contextual name; the result is announced through
+    // the polite status region, so a screen reader hears it too.
+    expect(screen.getByRole('status')).toHaveTextContent(/^Copied$/)
     act(() => {
       vi.advanceTimersByTime(1500)
     })
     expect(screen.getByRole('button', { name: 'Copy code' })).toHaveTextContent(/^Copy$/)
+    expect(screen.getByRole('status')).toHaveTextContent('')
   })
 
   // A denied clipboard must say so rather than look like a no-op click.
@@ -39,9 +43,11 @@ describe('CopyButton', () => {
       screen.getByRole('button', { name: 'Copy code' }).click()
     })
     expect(screen.getByRole('button', { name: 'Copy code' })).toHaveTextContent(/^Copy failed$/)
+    expect(screen.getByRole('status')).toHaveTextContent(/^Copy failed$/)
     act(() => {
       vi.advanceTimersByTime(1500)
     })
     expect(screen.getByRole('button', { name: 'Copy code' })).toHaveTextContent(/^Copy$/)
+    expect(screen.getByRole('status')).toHaveTextContent('')
   })
 })
