@@ -3,31 +3,32 @@ import { parsePatch, structuredPatch, type StructuredPatchHunk } from 'diff'
 import { maxOutputChars } from './OutputBlock'
 
 // DiffLine is one row of a unified diff: the hunk header, an added line, a
-// removed line, or a line both versions share. A side that has no such
-// line carries null, so the gutter shows nothing rather than a wrong
-// number.
+// removed line, a line both versions share, or a marker such as "\ No
+// newline at end of file", which describes the line above it. A side that
+// has no such line carries null, so the gutter shows nothing rather than a
+// wrong number.
 export interface DiffLine {
-  kind: 'hunk' | 'add' | 'del' | 'context'
+  kind: 'hunk' | 'add' | 'del' | 'context' | 'marker'
   text: string
   oldNumber: number | null
   newNumber: number | null
 }
 
-// maxDiffInputChars bounds each side of a diff. jsdiff's line pass is
-// quadratic in the worst case, and a large file's metadata carries the
-// whole file before and after: past this cap the view diffs the first
-// 20000 characters of each version and says that it did.
-export const maxDiffInputChars = maxOutputChars
+// maxDiffInputChars is a memory guard, not a clip: a version over a
+// mebibyte is not diffed at all and the view shows the new text instead.
+// The file is diffed whole below it, because a cut at a fixed offset shows
+// a phantom hunk at the cut, or no change at all when the edit is past it.
+export const maxDiffInputChars = 1024 * 1024
 
 // maxDiffEditLength bounds how different the two versions may be, in
-// changed lines, before jsdiff gives up and answers undefined. The
-// character cap alone does not bound the work: two 20000-character files
-// that share no line take 22.6 s to diff unbounded, because Myers's pass
-// costs the line count times the edit distance. Measured on this machine:
-// 14 ms at 200, 28 ms at 500, 98 ms at 1000, 1.5 s at 4000; a 13000
-// character file whose 200 lines were all rewritten is 402 apart and
-// diffs in 10 ms. A thousand keeps a whole-file rewrite readable while no
-// row can block the thread for more than about a tenth of a second.
+// changed lines, before jsdiff gives up and answers undefined. Myers's
+// pass costs the line count times the edit distance, so two 20000
+// character files that share no line take 21.5 s to diff unbounded.
+// Measured on this machine: 132 ms at the 20 KB pair, 184 ms at 338 KB
+// and 303 ms at the 1 MiB guard (all of them giving up), 1.5 s at 4000
+// unbounded; a 13000 character file whose 200 lines were all rewritten is
+// 402 apart and diffs in 10 ms. A thousand keeps a whole-file rewrite
+// readable while the worst row still answers in about a third of a second.
 export const maxDiffEditLength = 1000
 
 // maxDiffLines is the line clip a diff shares with an output block: a diff
@@ -46,20 +47,11 @@ function clipChars(text: string, max: number): string {
   return text.slice(0, end)
 }
 
-// boundDiffInput caps both versions at maxDiffInputChars, so no caller can
-// hand jsdiff an unbounded string. clipped says a side was cut, and the
-// view then names the cap instead of passing the diff off as the whole
-// story.
-export function boundDiffInput(
-  before: string,
-  after: string,
-): { before: string; after: string; clipped: boolean } {
-  const clipped = before.length > maxDiffInputChars || after.length > maxDiffInputChars
-  return {
-    before: before.length > maxDiffInputChars ? clipChars(before, maxDiffInputChars) : before,
-    after: after.length > maxDiffInputChars ? clipChars(after, maxDiffInputChars) : after,
-    clipped,
-  }
+// diffInputTooLarge is the memory guard: true when either version is over
+// maxDiffInputChars, where the diff is refused rather than clipped. It
+// reads lengths only, so asking costs nothing.
+export function diffInputTooLarge(before: string, after: string): boolean {
+  return before.length > maxDiffInputChars || after.length > maxDiffInputChars
 }
 
 // hunkLines numbers the lines of jsdiff's hunks on both sides.
@@ -78,7 +70,10 @@ function hunkLines(hunks: StructuredPatchHunk[]): DiffLine[] {
       const mark = line[0]
       const text = line.slice(1)
       if (mark === '\\') {
-        // "\ No newline at end of file" describes the line above.
+        // "\ No newline at end of file" describes the line above. It is a
+        // row of its own, so a -y/+y pair with no other difference shows
+        // why it changed.
+        out.push({ kind: 'marker', text: line, oldNumber: null, newNumber: null })
         continue
       }
       if (mark === '+') {
@@ -111,9 +106,10 @@ export interface DiffVersions {
 // memory a diff can pin is bounded by the input cap.
 let lastDiff: { before: string; after: string; context: number; answer: DiffVersions } | null = null
 
-// diffVersions diffs two versions of a file in the tab, within both the
-// character cap and the edit-distance cap. tooLarge is true when jsdiff
-// gave up: the view then says so instead of drawing a wrong diff.
+// diffVersions diffs two versions of a file in the tab, whole, within the
+// memory guard and the edit-distance cap. tooLarge is true when the
+// versions are too big to hold or too far apart to pass: the view then
+// says so instead of drawing a wrong diff.
 export function diffVersions(before: string, after: string, context = 3): DiffVersions {
   if (
     lastDiff !== null &&
@@ -123,8 +119,12 @@ export function diffVersions(before: string, after: string, context = 3): DiffVe
   ) {
     return lastDiff.answer
   }
-  const bounded = boundDiffInput(before, after)
-  const patch = structuredPatch('a', 'b', bounded.before, bounded.after, '', '', {
+  if (diffInputTooLarge(before, after)) {
+    const answer: DiffVersions = { lines: [], tooLarge: true }
+    lastDiff = { before, after, context, answer }
+    return answer
+  }
+  const patch = structuredPatch('a', 'b', before, after, '', '', {
     context,
     maxEditLength: maxDiffEditLength,
   })
@@ -134,9 +134,9 @@ export function diffVersions(before: string, after: string, context = 3): DiffVe
   return answer
 }
 
-// diffContents diffs two versions of a file in the tab. Both sides are
-// capped at maxDiffInputChars first; use boundDiffInput to learn whether a
-// side was cut, and diffVersions to learn whether jsdiff gave up.
+// diffContents diffs two versions of a file in the tab, whole. It answers
+// no lines when the guard or the edit-distance cap refuses the pair; use
+// diffVersions to learn which happened.
 export function diffContents(before: string, after: string, context = 3): DiffLine[] {
   return diffVersions(before, after, context).lines
 }

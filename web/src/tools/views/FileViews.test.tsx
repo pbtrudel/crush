@@ -3,7 +3,6 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import type { ToolCallPart, ToolResultPart } from '../../chat/parts'
-import { maxDiffInputChars } from '../diff'
 import { ToolEnvironmentProvider } from '../environment'
 import ToolCall from '../ToolCall'
 
@@ -20,6 +19,14 @@ function result(metadata: Record<string, unknown> | null, content = ''): ToolRes
     metadata: metadata ? JSON.stringify(metadata) : '',
     isError: false,
   }
+}
+
+// goFile is a file of about 26 KB: a thousand lines of about 25
+// characters, so a change at line 901 starts past character 20000.
+function goFile(changed: number | null): string {
+  return Array.from({ length: 1000 }, (_, index) =>
+    index === changed ? `\tvalue${index} = replaced(${index})` : `\tvalue${index} := compute(${index})`,
+  ).join('\n')
 }
 
 async function open(entry: ToolCallPart, answer: ToolResultPart | undefined, title: RegExp) {
@@ -123,8 +130,8 @@ describe('the file views', () => {
   // 20000 characters. The reveal lives in the environment, so the row the
   // virtualized log unmounts and mounts again is still whole.
   it('clips a long diff and keeps the reveal across a remount', async () => {
-    const before = Array.from({ length: 30 }, (_, index) => `old ${index + 1}`).join('\n')
-    const after = Array.from({ length: 30 }, (_, index) => `new ${index + 1}`).join('\n')
+    const before = `${Array.from({ length: 30 }, (_, index) => `old ${index + 1}`).join('\n')}\n`
+    const after = `${Array.from({ length: 30 }, (_, index) => `new ${index + 1}`).join('\n')}\n`
     const entry = call('edit', { file_path: '/tmp/a.go', old_string: 'x', new_string: 'y' })
     const answer = result({ additions: 30, removals: 30, old_content: before, new_content: after })
     const view = await open(entry, answer, /Edit/)
@@ -146,23 +153,67 @@ describe('the file views', () => {
     expect(screen.getByText('new 30')).toBeInTheDocument()
   })
 
-  // The file contents are capped before jsdiff runs; past the cap the view
-  // says so instead of looking like a diff of the whole file.
-  it('says when a diff was too large to show whole', async () => {
-    const before = `a${'x'.repeat(maxDiffInputChars)}`
-    const after = `b${'x'.repeat(maxDiffInputChars)}`
-    await open(
-      call('edit', { file_path: '/tmp/big.go', old_string: 'a', new_string: 'b' }),
+  // The whole file is diffed, so an edit past character 20000 is its own
+  // hunk with its own line numbers, and no hunk sits at a cut point.
+  it('diffs a line past character 20000 of a big file', async () => {
+    const before = goFile(null)
+    const after = goFile(900)
+    expect(before.length).toBeGreaterThan(20000)
+    const { container } = await open(
+      call('edit', { file_path: '/tmp/big.go', old_string: '\tvalue900 := compute(900)', new_string: '\tvalue900 = replaced(900)' }),
       result({ additions: 1, removals: 1, old_content: before, new_content: after }),
       /Edit/,
     )
-    expect(screen.getByText(/Diff too large/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Show all \(/ })).toBeInTheDocument()
+    expect(before.slice(0, 20000)).not.toContain('value900 :=')
+    const kinds = [...container.querySelectorAll('[data-kind]')].map((node) => node.getAttribute('data-kind'))
+    expect(kinds.filter((kind) => kind === 'hunk')).toHaveLength(1)
+    expect(kinds).toEqual([
+      'hunk',
+      'context',
+      'context',
+      'context',
+      'del',
+      'add',
+      'context',
+      'context',
+      'context',
+    ])
+    expect(container.querySelector('[data-kind="hunk"]')).toHaveTextContent('@@ -898,7 +898,7 @@')
+    const del = container.querySelector('[data-kind="del"]')
+    expect(del).toHaveTextContent('value900 := compute(900)')
+    expect([...(del?.querySelectorAll('[aria-hidden="true"]') ?? [])].map((node) => node.textContent)).toEqual([
+      '901',
+      '',
+      '−',
+    ])
+    const add = container.querySelector('[data-kind="add"]')
+    expect(add).toHaveTextContent('value900 = replaced(900)')
+    expect([...(add?.querySelectorAll('[aria-hidden="true"]') ?? [])].map((node) => node.textContent)).toEqual([
+      '',
+      '901',
+      '+',
+    ])
   })
 
-  // Two versions that share no line are too far apart to diff; the view
-  // says so rather than looking like a file with no change.
-  it('says when an edit changes too many lines to diff', async () => {
+  it('shows one hunk for a one-line edit near the top of a big file', async () => {
+    const { container } = await open(
+      call('edit', { file_path: '/tmp/big.go', old_string: '\tvalue5 := compute(5)', new_string: '\tvalue5 = replaced(5)' }),
+      result({ additions: 1, removals: 1, old_content: goFile(null), new_content: goFile(5) }),
+      /Edit/,
+    )
+    const hunks = [...container.querySelectorAll('[data-kind="hunk"]')]
+    expect(hunks).toHaveLength(1)
+    // value5 is the sixth line: three lines of context either side.
+    expect(hunks[0]).toHaveTextContent('@@ -3,7 +3,7 @@')
+    const dels = [...container.querySelectorAll('[data-kind="del"]')]
+    expect(dels).toHaveLength(1)
+    expect(dels[0]).toHaveTextContent('value5 := compute(5)')
+    expect([...(dels[0].querySelectorAll('[aria-hidden="true"]') ?? [])][0]).toHaveTextContent('6')
+  })
+
+  // When the file's two versions are too far apart to diff, the call's own
+  // strings still show the change.
+  it('falls back to the call strings when the file diff gives up', async () => {
     const before = 'alpha\n'.repeat(600)
     const after = 'beta\n'.repeat(600)
     await open(
@@ -170,8 +221,68 @@ describe('the file views', () => {
       result({ additions: 600, removals: 600, old_content: before, new_content: after }),
       /Edit/,
     )
+    expect(screen.getByText('alpha').closest('[data-kind]')).toHaveAttribute('data-kind', 'del')
+    expect(screen.getByText('beta').closest('[data-kind]')).toHaveAttribute('data-kind', 'add')
+    expect(screen.queryByText(/Diff too large/)).toBeNull()
+    expect(screen.queryByRole('group', { name: 'New content' })).toBeNull()
+  })
+
+  // When even the call's strings give up, the new text is shown under the
+  // note, so the row never hides the change.
+  it('shows the new text when every diff gives up', async () => {
+    const before = 'alpha\n'.repeat(600)
+    const after = 'beta\n'.repeat(600)
+    const oldString = 'one\n'.repeat(600)
+    const newString = 'two\n'.repeat(600)
+    await open(
+      call('edit', { file_path: '/tmp/a.go', old_string: oldString, new_string: newString }),
+      result({ additions: 600, removals: 600, old_content: before, new_content: after }),
+      /Edit/,
+    )
     expect(screen.getByText(/Diff too large/)).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'New content' })).toHaveTextContent('beta')
     expect(screen.queryByText('No changes')).toBeNull()
+  })
+
+  // A call with no file contents of its own, whose strings are too far
+  // apart, shows the new string rather than an empty card.
+  it('shows the new string when there is no file to diff', async () => {
+    await open(
+      call('edit', { file_path: '/tmp/a.go', old_string: 'one\n'.repeat(600), new_string: 'two\n'.repeat(600) }),
+      undefined,
+      /Edit/,
+    )
+    expect(screen.getByText(/Diff too large/)).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'New content' })).toHaveTextContent('two')
+  })
+
+  // The marker explains a -y/+y pair whose only difference is the final
+  // newline.
+  it('shows the no-newline marker as a muted row', async () => {
+    const { container } = await open(
+      call('edit', { file_path: '/tmp/notes.txt', old_string: 'y', new_string: 'y\n' }),
+      result({ additions: 1, removals: 1, old_content: 'a\ny', new_content: 'a\ny\n' }),
+      /Edit/,
+    )
+    const marker = container.querySelector('[data-kind="marker"]')
+    expect(marker).toHaveTextContent('No newline at end of file')
+    expect(marker?.className).toMatch(/marker/)
+    // The pair itself is unchanged text: only the marker explains it.
+    expect(container.querySelector('[data-kind="del"]')).toHaveTextContent('y')
+    expect(container.querySelector('[data-kind="add"]')).toHaveTextContent('y')
+  })
+
+  // A failed edit has no change to count, so its header names the path
+  // alone.
+  it('drops the counts of a failed edit', async () => {
+    await open(
+      call('edit', { file_path: '/tmp/a.go', old_string: 'x', new_string: 'y' }),
+      { ...result({ additions: 4, removals: 4 }, 'old_string not found in file'), isError: true },
+      /Edit/,
+    )
+    const header = screen.getByRole('button', { name: /Edit/ })
+    expect(header).toHaveTextContent('/tmp/a.go')
+    expect(header).not.toHaveTextContent('−')
   })
 
   it('shows a multiedit as one diff of the file it rewrote', async () => {

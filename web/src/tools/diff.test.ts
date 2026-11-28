@@ -4,7 +4,6 @@ import { contrast, rgbOf, vars } from '../theme/contrast'
 import design from '../theme/design-platform.css?raw'
 import view from './DiffView.module.css?raw'
 import {
-  boundDiffInput,
   clipDiffLines,
   diffContents,
   diffFromPatch,
@@ -34,13 +33,37 @@ describe('diffContents', () => {
     expect(diffContents('same\n', 'same\n')).toEqual([])
   })
 
-  // The tab diffs the first 20000 characters of each version and says so,
-  // so a huge edit cannot stall the row. The pin: a change past the cap is
-  // not in the diff at all.
-  it('never diffs past the input cap', () => {
-    const before = 'a\n'.repeat(maxDiffInputChars)
-    expect(before.length).toBeGreaterThan(maxDiffInputChars)
-    expect(diffContents(before, `${before}b\n`)).toEqual([])
+  // A file over 20000 characters is diffed whole: a cut at a fixed offset
+  // shows a phantom hunk at the cut, or no change at all when the edit is
+  // past it. The pin is a real hunk with the real line numbers.
+  it('diffs a change past character 20000', () => {
+    const before = Array.from({ length: 1000 }, (_, index) => `const value${index} = compute(${index})`).join('\n')
+    const after = Array.from({ length: 1000 }, (_, index) =>
+      index === 900 ? 'const value900 = replaced(900)' : `const value${index} = compute(${index})`,
+    ).join('\n')
+    expect(before.length).toBeGreaterThan(20000)
+    const lines = diffContents(before, after)
+    expect(lines.filter((line) => line.kind === 'hunk')).toHaveLength(1)
+    expect(lines.filter((line) => line.kind === 'del')).toEqual([
+      { kind: 'del', text: 'const value900 = compute(900)', oldNumber: 901, newNumber: null },
+    ])
+    expect(lines.filter((line) => line.kind === 'add')).toEqual([
+      { kind: 'add', text: 'const value900 = replaced(900)', oldNumber: null, newNumber: 901 },
+    ])
+  })
+
+  // A -y/+y pair with a trailing newline changed has no visible reason
+  // without the marker; it describes the line above it.
+  it('keeps the no-newline marker as a row', () => {
+    const lines = diffContents('a\ny', 'a\ny\n')
+    expect(lines.map((line) => line.kind)).toEqual(['hunk', 'context', 'del', 'marker', 'add'])
+    expect(lines[3]).toEqual({
+      kind: 'marker',
+      text: '\\ No newline at end of file',
+      oldNumber: null,
+      newNumber: null,
+    })
+    expect(diffStats(lines)).toEqual({ added: 1, removed: 1 })
   })
 
   // The row that was open is unmounted and mounted again by the
@@ -59,9 +82,8 @@ describe('diffVersions', () => {
     expect(diffStats(answer.lines)).toEqual({ added: 1, removed: 1 })
   })
 
-  // The character cap alone does not bound the work: two files that share
-  // no line make Myers's pass quadratic, and 20000 characters of that take
-  // 22.6 s. The edit-distance cap gives up instead.
+  // Two files that share no line make Myers's pass quadratic, and 20000
+  // characters of that take 21.5 s. The edit-distance cap gives up instead.
   it('gives up on two versions that share no line', () => {
     const before = 'a\n'.repeat(3000)
     const after = 'b\n'.repeat(3000)
@@ -81,23 +103,26 @@ describe('diffVersions', () => {
   })
 })
 
-describe('boundDiffInput', () => {
-  it('leaves a small input whole', () => {
-    expect(boundDiffInput('a\n', 'b\n')).toEqual({ before: 'a\n', after: 'b\n', clipped: false })
+describe('the memory guard', () => {
+  it('diffs a file far over 20000 characters', () => {
+    const before = Array.from({ length: 9000 }, (_, index) => `line ${index}`).join('\n')
+    expect(before.length).toBeGreaterThan(20000)
+    expect(diffVersions(before, `${before}\nlast`).tooLarge).toBe(false)
   })
 
-  it('caps each side at the input cap and says it did', () => {
-    const long = 'x'.repeat(maxDiffInputChars + 10)
-    const bound = boundDiffInput(long, long)
-    expect(bound.before).toHaveLength(maxDiffInputChars)
-    expect(bound.after).toHaveLength(maxDiffInputChars)
-    expect(bound.clipped).toBe(true)
+  // A version over a mebibyte is not diffed at all; the view shows the new
+  // text instead. The guard reads lengths, so it costs nothing.
+  it('refuses a version over a mebibyte', () => {
+    const big = `${'x'.repeat(maxDiffInputChars)}y`
+    const started = performance.now()
+    expect(diffVersions(big, 'small')).toEqual({ lines: [], tooLarge: true })
+    expect(diffVersions('small', big)).toEqual({ lines: [], tooLarge: true })
+    expect(performance.now() - started).toBeLessThan(50)
   })
 
-  // Half a surrogate pair renders as a replacement glyph.
-  it('does not cut a surrogate pair in half', () => {
-    const bound = boundDiffInput(`${'x'.repeat(maxDiffInputChars - 1)}😀rest`, '')
-    expect(bound.before).toHaveLength(maxDiffInputChars - 1)
+  it('still diffs a version just under the guard', () => {
+    const big = 'x'.repeat(maxDiffInputChars - 10)
+    expect(diffVersions(`${big}tail`, `${big}tale`).tooLarge).toBe(false)
   })
 })
 

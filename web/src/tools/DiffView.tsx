@@ -15,8 +15,14 @@ export interface DiffViewProps {
 
 // The mark and the spoken word carry a change, so a diff still reads when
 // the colour is missing: colour is never the only signal.
-const marks: Record<DiffLine['kind'], string> = { hunk: '', add: '+', del: '−', context: ' ' }
-const spoken: Record<DiffLine['kind'], string> = { hunk: '', add: 'Added: ', del: 'Removed: ', context: '' }
+const marks: Record<DiffLine['kind'], string> = { hunk: '', marker: '', add: '+', del: '−', context: ' ' }
+const spoken: Record<DiffLine['kind'], string> = {
+  hunk: '',
+  marker: '',
+  add: 'Added: ',
+  del: 'Removed: ',
+  context: '',
+}
 
 function thousands(chars: number): number {
   return Math.ceil(chars / 1000)

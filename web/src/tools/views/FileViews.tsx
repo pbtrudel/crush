@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 
 import CodeBlock from '../../chat/markdown/CodeBlock'
 import { languageForPath } from '../../chat/markdown/languages'
-import { boundDiffInput, diffFromPatch, diffStats, diffVersions, maxDiffInputChars } from '../diff'
+import { diffFromPatch, diffStats, diffVersions, type DiffLine } from '../diff'
 import DiffView from '../DiffView'
 import { arrayField, numberField, parseInput, stringField, type ToolInput } from '../input'
 import OutputBlock, { ToolSection } from '../OutputBlock'
@@ -80,22 +80,9 @@ function editList(input: ToolInput | null): ToolInput[] {
   return out
 }
 
-// editPairs is what the call changed: the file's whole before and after
-// when the tool recorded them, else the pairs the call itself carries,
-// one per edit of a multiedit. While the arguments stream there is no
-// pair: half-written strings cost a diff each delta and say nothing.
-function editPairs(
-  finished: boolean,
-  input: ToolInput | null,
-  before: string,
-  after: string,
-): [string, string][] {
-  if (before !== '' || after !== '') {
-    return [[before, after]]
-  }
-  if (!finished) {
-    return []
-  }
+// editPairs is the call's own strings: one pair per edit of a multiedit,
+// else the single old and new string.
+function editPairs(input: ToolInput | null): [string, string][] {
   const edits = editList(input)
   if (edits.length > 0) {
     return edits.map((edit) => [stringField(edit, 'old_string'), stringField(edit, 'new_string')])
@@ -103,45 +90,81 @@ function editPairs(
   return [[stringField(input, 'old_string'), stringField(input, 'new_string')]]
 }
 
-const capChars = maxDiffInputChars.toLocaleString('en-US')
+// lastNewString is the text the call wrote, for the fallback when no diff
+// of it can be drawn.
+function lastNewString(input: ToolInput | null): string {
+  const edits = editList(input)
+  const last = edits.at(-1)
+  return last === undefined ? stringField(input, 'new_string') : stringField(last, 'new_string')
+}
+
+interface Diffed {
+  lines: DiffLine[]
+  // gaveUp is true when neither the file's two versions nor the call's own
+  // strings could be diffed, so the view has to show the text instead.
+  gaveUp: boolean
+}
+
+// editDiff diffs the file's two versions, falls back to the call's own
+// strings when that pair is too far apart, and gives up only when both
+// are. Every attempt pays the same bounds.
+function editDiff(filePair: [string, string] | null, callPairs: [string, string][]): Diffed {
+  if (filePair !== null) {
+    const file = diffVersions(filePair[0], filePair[1])
+    if (!file.tooLarge) {
+      return { lines: file.lines, gaveUp: false }
+    }
+  }
+  const answers = callPairs.map(([old, next]) => diffVersions(old, next))
+  if (answers.length > 0 && answers.every((answer) => !answer.tooLarge)) {
+    return { lines: answers.flatMap((answer) => answer.lines), gaveUp: false }
+  }
+  return { lines: [], gaveUp: true }
+}
 
 function EditBody({ call, input, result }: ToolBodyProps) {
-  const metadata = result?.isError ? null : parseInput(result?.metadata ?? '')
+  const isError = result?.isError === true
+  const metadata = isError ? null : parseInput(result?.metadata ?? '')
   const before = stringField(metadata, 'old_content')
   const after = stringField(metadata, 'new_content')
   const finished = call.finished
-  const pairs = useMemo(() => editPairs(finished, input, before, after), [finished, input, before, after])
-  // The versions are capped before jsdiff runs, so a huge file cannot
-  // stall the row; the note below says when a cap applied.
-  const bounded = useMemo(() => pairs.map(([old, next]) => boundDiffInput(old, next)), [pairs])
-  const diffed = useMemo(
-    () => bounded.map((entry) => diffVersions(entry.before, entry.after)),
-    [bounded],
+  const filePair = useMemo<[string, string] | null>(
+    () => (before !== '' || after !== '' ? [before, after] : null),
+    [before, after],
   )
-  if (result?.isError) {
-    return <ErrorSection content={result.content} revealKey={`${call.id}:error`} />
+  // A failed call has no change to diff, and half-written arguments are
+  // not worth one: the row reads that it is still being written instead.
+  const callPairs = useMemo(
+    () => (finished && !isError ? editPairs(input) : []),
+    [finished, isError, input],
+  )
+  const diffed = useMemo(() => editDiff(filePair, callPairs), [filePair, callPairs])
+  const newText = after !== '' ? after : lastNewString(input)
+  if (isError) {
+    return <ErrorSection content={result?.content ?? ''} revealKey={`${call.id}:error`} />
   }
-  if (pairs.length === 0) {
+  if (filePair === null && callPairs.length === 0) {
     return <p className={styles.note}>Editing…</p>
   }
-  const tooLarge = diffed.some((entry) => entry.tooLarge)
-  const lines = diffed.flatMap((entry) => entry.lines)
-  return (
-    <>
-      {tooLarge || bounded.some((entry) => entry.clipped) ? (
-        <p className={styles.note}>
-          {tooLarge
-            ? 'Diff too large: this edit changes more lines than the view will diff.'
-            : `Diff too large: showing the first ${capChars} characters of each version.`}
-        </p>
-      ) : null}
-      {tooLarge ? null : <DiffView lines={lines} revealKey={`${call.id}:diff`} />}
-    </>
-  )
+  if (diffed.gaveUp) {
+    return (
+      <>
+        <p className={styles.note}>Diff too large: showing the new text instead.</p>
+        {newText === '' ? null : (
+          <ToolSection label="New content">
+            <OutputBlock text={newText} revealKey={`${call.id}:new`} />
+          </ToolSection>
+        )}
+      </>
+    )
+  }
+  return <DiffView lines={diffed.lines} revealKey={`${call.id}:diff`} />
 }
 
 function editSummary(input: ToolInput | null, result: ToolBodyProps['result']): string {
-  return `${stringField(input, 'file_path')}${counts(parseInput(result?.metadata ?? ''))}`
+  const path = stringField(input, 'file_path')
+  // A failed edit changed nothing, so it names no counts of its own.
+  return result?.isError ? path : `${path}${counts(parseInput(result?.metadata ?? ''))}`
 }
 
 export const editView: ToolView = { title: () => 'Edit', summary: editSummary, Body: EditBody }
