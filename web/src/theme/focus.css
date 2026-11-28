@@ -1,6 +1,7 @@
 /* Copied from deepseek-harness packages/client/ui-theme/src/styles/focus.css
  * at 4b399c39a6d1479cd84ca591b4d7c88e24d38a96. MIT license, see
- * web/THIRD_PARTY_NOTICES.md. Changes: none. */
+ * web/THIRD_PARTY_NOTICES.md. Changes: the data-input-modality pointer rule was
+ * dropped, because nothing in the shell sets that attribute. */
 /* Components own offsets; dense tables and toolbars may keep a 1px ring. */
 :root {
   --dsw-focus-ring-width: 2px;
@@ -13,12 +14,4 @@
 :focus-visible {
   outline-color: var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-width: var(--dsw-focus-ring-width);
-}
-
-/* ui-primitives/input-modality publishes the attribute. Editable controls keep
- * their focus feedback on click; other controls reveal rings on keyboard
- * navigation. Only ring paint is suppressed, not elevation or selected borders. */
-html[data-input-modality='pointer'] body :focus-visible:not(:read-write) {
-  --dsw-focus-ring-color: transparent;
-  outline-color: transparent;
 }

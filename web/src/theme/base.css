@@ -1,6 +1,7 @@
 /* Copied from deepseek-harness packages/client/ui-theme/src/styles/base.css
  * at 4b399c39a6d1479cd84ca591b4d7c88e24d38a96. MIT license, see
- * web/THIRD_PARTY_NOTICES.md. Changes: none. */
+ * web/THIRD_PARTY_NOTICES.md. Changes: the [data-dsh-automatic-focus] focus
+ * rule was dropped, because nothing in the shell sets that attribute. */
 /* Base variables referenced by the token sheets and component CSS but defined
  * upstream (deepsuite theme/global.css) — supplied here so the composite
  * --dsw-font-* variables resolve and motion rides the upstream curve. Code
@@ -34,9 +35,4 @@ body {
   --ds-font-family-code: var(--dsh-font-family-code, var(--dsh-font-family-code-default)), var(--dsh-font-family-code-default);
   --dsw-alias-settings-card-fill: var(--dsw-alias-bg-layer-2);
   --dsw-alias-settings-card-stroke: var(--dsw-alias-border-l4);
-}
-
-[data-dsh-automatic-focus]:focus,
-[data-dsh-automatic-focus]:focus:focus-visible {
-  outline: none;
 }

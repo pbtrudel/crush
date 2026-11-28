@@ -3,7 +3,9 @@
  * web/THIRD_PARTY_NOTICES.md. Changes: the dark-theme selectors were
  * rewritten from `body[data-ds-dark-theme]` to `html[data-ds-theme='dark']`
  * body` (and the darwin override to match), so the shell's html attribute
- * drives the theme. */
+ * drives the theme. The darwin-only blocks (the macOS menu fill and the
+ * vibrancy sidebar glass, tint and washes) were dropped, because nothing in
+ * the shell sets data-platform and no rule reads those variables. */
 /* Figma font-weight 510 (an SF Pro variable-font weight) always renders as
    font-weight: 500 in this UI — non-variable webfonts snap intermediate
    weights unpredictably across platforms. */
@@ -480,38 +482,3 @@ html[data-ds-theme='dark'] body {
   --dsw-specific-tip: var(--dsw-static-neutral-bluish-800);
 }
 
-/* Overlays without MenuSurface's opaque backing cannot blur page content over
- * native vibrancy reliably, so their fill stays nearly opaque on macOS. */
-html[data-platform='darwin'] body {
-  --dsw-specific-menu: rgba(248, 249, 250, 0.94);
-}
-
-html[data-platform='darwin'][data-ds-theme='dark'] body {
-  --dsw-specific-menu: rgba(48, 49, 54, 0.94);
-}
-
-/* macOS vibrancy sidebar: glass control fills (the collapsed rail drops the
- * light fill but keeps the dark one), the column's top and bottom
- * washes with their fully transparent ends, and its translucent tint. Dark drops the tint's blue cast (it reads
- * purple over dark fills) and thins it so more wallpaper shows. */
-html[data-platform='darwin'] body {
-  --dsw-specific-sidebar-glass-collapsed-fill: transparent;
-  --dsw-specific-sidebar-glass-collapsed-hover: var(--dsw-alias-interactive-bg-hover);
-  --dsw-specific-sidebar-glass-fill: rgb(255 255 255 / 0.55);
-  --dsw-specific-sidebar-glass-hover: rgb(255 255 255 / 0.3);
-  --dsw-specific-sidebar-tint: color-mix(in srgb, color-mix(in srgb, var(--dsw-specific-sidebar-fill) 97%, rgb(122 155 240)) 40%, transparent);
-  --dsw-specific-sidebar-wash-bottom: rgb(143 137 184 / 0.09);
-  --dsw-specific-sidebar-wash-bottom-clear: rgb(143 137 184 / 0);
-  --dsw-specific-sidebar-wash-top: rgb(122 155 240 / 0.1);
-  --dsw-specific-sidebar-wash-top-clear: rgb(122 155 240 / 0);
-}
-
-html[data-platform='darwin'][data-ds-theme='dark'] body {
-  --dsw-specific-sidebar-glass-collapsed-fill: var(--dsw-specific-sidebar-glass-fill);
-  --dsw-specific-sidebar-glass-collapsed-hover: var(--dsw-specific-sidebar-glass-hover);
-  --dsw-specific-sidebar-glass-fill: rgb(255 255 255 / 0.15);
-  --dsw-specific-sidebar-glass-hover: rgb(255 255 255 / 0.2);
-  --dsw-specific-sidebar-tint: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 50%, transparent);
-  --dsw-specific-sidebar-wash-bottom: rgb(143 137 184 / 0.07);
-  --dsw-specific-sidebar-wash-top: rgb(122 155 240 / 0.08);
-}
