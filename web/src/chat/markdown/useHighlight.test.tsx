@@ -1,16 +1,10 @@
-import { act, render } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The tokenizer is mocked so a pass is a call to count, not a grammar
-// load: these cases are about when a pass runs and how big a block may be,
-// and fail is the chunk import that rejects.
-const highlighter = vi.hoisted(() => ({ fail: false, tokenize: vi.fn() }))
-vi.mock('./highlighter', () => {
-  if (highlighter.fail) {
-    throw new Error('chunk failed')
-  }
-  return { tokenize: highlighter.tokenize }
-})
+// load: these cases are about when a pass runs and how big a block may be.
+const highlighter = vi.hoisted(() => ({ tokenize: vi.fn() }))
+vi.mock('./highlighter', () => ({ tokenize: highlighter.tokenize }))
 
 import CodeBlock from './CodeBlock'
 import { highlightThrottleMs, maxHighlightSource } from './useHighlight'
@@ -60,10 +54,16 @@ describe('useHighlight', () => {
     expect(highlighter.tokenize.mock.calls.map((call) => call[0])).toEqual(['a = 1', 'a = 1\nb = 2'])
   })
 
-  it('leaves a block whose tokenize rejects plain', async () => {
+  // A grammar that cannot load must leave the block plain rather than throw
+  // or keep a stale pass: the pass is waited for, so the plain text is the
+  // answer to a settled rejection and not a pass that has yet to run.
+  it('leaves a block whose grammar load rejects plain', async () => {
     highlighter.tokenize.mockRejectedValue(new Error('grammar failed'))
     const { container } = render(<CodeBlock code="package main" language="go" />)
+    await waitFor(() => expect(highlighter.tokenize).toHaveBeenCalledTimes(1))
     await act(async () => {
+      await expect(highlighter.tokenize.mock.results[0]?.value).rejects.toThrow('grammar failed')
+      // One more turn lets React settle the swallowed rejection.
       await Promise.resolve()
     })
     expect(container.querySelector('[class*="tok-"]')).toBeNull()

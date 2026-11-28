@@ -42,7 +42,9 @@ interface Pass {
 export function useHighlight(code: string, language: string | null): Highlight | null {
   const lang = resolveLanguage(language)
   const [pass, setPass] = useState<Pass | null>(null)
-  const lastPass = useRef(0)
+  // performance.now() is monotonic, so a clock that steps backwards (an NTP
+  // correction) cannot push the next pass a whole window out.
+  const lastPass = useRef(Number.NEGATIVE_INFINITY)
 
   useEffect(() => {
     if (lang === null || code.length > maxHighlightSource) {
@@ -50,7 +52,7 @@ export function useHighlight(code: string, language: string | null): Highlight |
     }
     let live = true
     const run = () => {
-      lastPass.current = Date.now()
+      lastPass.current = performance.now()
       loadHighlighter()
         .then((highlighter) => highlighter.tokenize(code, lang))
         .then(
@@ -67,7 +69,7 @@ export function useHighlight(code: string, language: string | null): Highlight |
     // its whole text: run at most one pass per highlightThrottleMs. The
     // timer is trailing, so the last text always gets a pass, and the
     // cleanup drops a pass that a later change or the unmount outdates.
-    const wait = highlightThrottleMs - (Date.now() - lastPass.current)
+    const wait = highlightThrottleMs - (performance.now() - lastPass.current)
     if (wait <= 0) {
       run()
       return () => {
