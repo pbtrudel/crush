@@ -10,20 +10,10 @@ import { safeStorage } from './storage'
 
 export type BootState = 'authenticating' | 'ready' | 'unauthorized' | 'unreachable'
 
-// GatewayClient is the part of ApiClient the tab needs before anything is
-// rendered. It is what a test substitutes, so the hook never reaches the
-// network on its own. The response body of get is unused — the call exists to
-// prove the gateway answers.
-export interface GatewayClient {
-  readonly authenticated: boolean
-  authenticate(token: string): Promise<void>
-  get(path: string): Promise<unknown>
-  wsProtocols(): string[]
-  clearToken(): void
-}
-
 export interface GatewayOptions {
-  client?: GatewayClient
+  // client is the tab's gateway client. A test passes one whose fetch is a
+  // stub, so the hook never reaches the network on its own.
+  client?: ApiClient
   hash?: string
   stripHash?: () => void
   createSocket?: (url: string, protocols: string[]) => WebSocket
@@ -45,7 +35,7 @@ export interface Gateway {
 // store, so the shell renders before any session is selected.
 export function useGateway(options: GatewayOptions = {}): Gateway {
   const client = useMemo(
-    () => (options.client as ApiClient | undefined) ?? new ApiClient({ storage: safeStorage('session') }),
+    () => options.client ?? new ApiClient({ storage: safeStorage('session') }),
     [options.client],
   )
   const store = useMemo(() => createAppStore(options.storage ?? safeStorage('local')), [options.storage])

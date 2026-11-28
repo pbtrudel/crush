@@ -1,15 +1,10 @@
-import { HttpError, readTokenFromHash } from '../api/http'
+import { HttpError, readTokenFromHash, type ApiClient } from '../api/http'
 
 export interface BootEnv {
-  client: {
-    authenticated: boolean
-    authenticate(token: string): Promise<void>
-    // The body is unused: the call exists to prove the gateway answers.
-    get(path: string): Promise<unknown>
-    // clearToken forgets a credential the gateway refused, so a reload asks
-    // for a fresh link instead of offering the same dead token again.
-    clearToken?(): void
-  }
+  // boot drives the tab's own client and nothing else: the Pick names the
+  // members it uses, so a test hands it a real ApiClient over a stub fetch
+  // rather than a stand-in that can drift from the class.
+  client: Pick<ApiClient, 'authenticated' | 'authenticate' | 'get' | 'clearToken'>
   hash: string
   stripHash(): void
 }
@@ -40,7 +35,7 @@ export async function boot(env: BootEnv): Promise<BootResult> {
       // Only a refusal is a token problem. A request that never reached the
       // gateway leaves the stored token alone: it may still be good.
       if (isUnauthorized(error)) {
-        env.client.clearToken?.()
+        env.client.clearToken()
         return { ok: false, reason: 'unauthorized', message: messageOf(error) }
       }
       return { ok: false, reason: 'unreachable', message: messageOf(error) }
@@ -55,7 +50,7 @@ export async function boot(env: BootEnv): Promise<BootResult> {
     // gateway start mints a new one, so the tab drops it and asks for a
     // fresh link.
     if (isUnauthorized(error)) {
-      env.client.clearToken?.()
+      env.client.clearToken()
       return { ok: false, reason: 'unauthorized', message: messageOf(error) }
     }
     return { ok: false, reason: 'unreachable', message: messageOf(error) }
