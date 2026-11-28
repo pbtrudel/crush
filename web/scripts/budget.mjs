@@ -37,7 +37,10 @@ if (total > budgetBytes) {
 // literal the library's own code carries, which minification keeps. A
 // marker found in no chunk at all means it went stale with an upgrade:
 // that fails too, so the check can never pass by accident.
-const lazyMarkers = [{ name: 'Shiki', text: 'ShikiError' }]
+const lazyMarkers = [
+  { name: 'Shiki', text: 'ShikiError' },
+  { name: 'KaTeX', text: 'KaTeX parse error' },
+]
 const assets = readdirSync(join(dist, 'assets')).filter((name) => name.endsWith('.js'))
 const firstPaint = new Set(sources.map((source) => source.replace(/^\//, '')))
 let lazyFailed = false

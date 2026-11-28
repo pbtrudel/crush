@@ -83,6 +83,18 @@ pre.mathSource {
   overflow-x: auto;
 }
 
+/* MathML draws with the browser's own math fonts, so no KaTeX styles or
+   fonts are needed; only the block layout is ours. */
+.mathDisplay {
+  display: block;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.mathInline {
+  display: inline;
+}
+
 .task {
   list-style: none;
   margin-left: -20px;
