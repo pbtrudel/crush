@@ -238,10 +238,12 @@ fresh.
   "Open in terminal" actions.
 - `conversation/`: header with title (inline rename) and More menu (Copy as
   Markdown, Export); chat view virtualized with `@tanstack/react-virtual`;
-  turn rail; back-to-bottom.
+  turn rail; back-to-bottom. M2 ships the virtualized view and
+  back-to-bottom; the turn rail lands with M3.
 - `chat/`: message bubbles with copy, markdown (micromark/mdast, Shiki,
   KaTeX), reasoning previews, usage footer, context ring, retry row, error
-  rows, toasts.
+  rows, toasts. M2 ships everything up to the context ring; the retry row
+  and toasts land with M3, because the retry row needs the composer.
 - `tools/`: tool-call trees with nested subcalls and one view per tool type;
   ANSI-aware terminal card; exit-code capsule; diff rendering.
 - `composer/`: Lexical editor; `/` and `@` menus with atomic chips;
@@ -309,7 +311,9 @@ Frontend:
   milestone plus a multi-session spec (two sessions running, switching,
   markers updating).
 - Visual baselines for light and dark at 1440 and 1280 wide, added only once
-  their milestone settles.
+  their milestone settles. The chat screen settles with M6's polish pass, so
+  its baselines land there; M2 pins light colours with contrast unit tests
+  and the axe scan instead.
 - axe scans on every main screen.
 
 CI: `.github/workflows/web.yml` keeps its jobs (typecheck and unit tests,
