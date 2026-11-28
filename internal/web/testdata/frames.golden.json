@@ -473,6 +473,27 @@
           "provider": "",
           "created_at": 100,
           "updated_at": 100
+        },
+        {
+          "parts": [
+            {
+              "type": "tool_result",
+              "data": {
+                "tool_call_id": "tc-1",
+                "name": "view",
+                "content": "package parser",
+                "metadata": "{\"file_path\":\"parser.go\",\"content\":\"package parser\"}",
+                "is_error": false
+              }
+            }
+          ],
+          "id": "t-1",
+          "role": "tool",
+          "session_id": "s1",
+          "model": "",
+          "provider": "",
+          "created_at": 103,
+          "updated_at": 103
         }
       ],
       "has_more": true,

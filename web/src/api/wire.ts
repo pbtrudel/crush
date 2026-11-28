@@ -1,5 +1,10 @@
 import { z, type ZodTypeAny } from 'zod'
 
+// zod 4 compiles object parsers with new Function unless it is told not
+// to, and the gateway's CSP has no 'unsafe-eval': the probe alone reports
+// a CSP violation in the console. jitless parses the same way, without it.
+z.config({ jitless: true })
+
 export const sessionStatusSchema = z.enum(['idle', 'running', 'queued', 'pending_interaction'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
@@ -10,6 +15,11 @@ const sessionSchema = z
     title: z.string(),
     message_count: z.number(),
     updated_at: z.number(),
+    // The usage the footer reads. prompt_tokens and completion_tokens are
+    // the last step's context, cost the session's running total.
+    prompt_tokens: z.number().optional(),
+    completion_tokens: z.number().optional(),
+    cost: z.number().optional(),
   })
   .passthrough()
 
@@ -54,6 +64,9 @@ export const messageSchema = z
     parts: z.array(z.object({ type: z.string(), data: z.unknown() })),
     created_at: z.number(),
     updated_at: z.number(),
+    // The model that wrote an assistant message, for the turn footer.
+    model: z.string().optional(),
+    provider: z.string().optional(),
   })
   .passthrough()
 export type WireMessage = z.infer<typeof messageSchema>

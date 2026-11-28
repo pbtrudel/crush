@@ -313,7 +313,7 @@ func gatewayFrames(t *testing.T) map[string]frame {
 		frameSessionSnapshot: mkSession(frameSessionSnapshot, "s1", SessionSnapshot{
 			SessionID: "s1",
 			Session:   fixtureSessionEntity(),
-			Messages:  []json.RawMessage{fixtureUserMessage(t)},
+			Messages:  []json.RawMessage{fixtureUserMessage(t), fixtureToolMessage(t)},
 			HasMore:   true,
 			Files: []FileSummary{{
 				Path: "/repo/parser.go", Versions: 1, VersionIDs: []int64{0},
@@ -400,6 +400,22 @@ func fixtureUserMessage(t *testing.T) json.RawMessage {
 	raw := innerPayload(pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: message.Message{
 		ID: "u-1", SessionID: "s1", Role: message.User, CreatedAt: 100, UpdatedAt: 100,
 		Parts: []message.ContentPart{message.TextContent{Text: "Refactor the parser"}},
+	}})
+	require.NotNil(t, raw)
+	return raw
+}
+
+// fixtureToolMessage is the tool message that answers a-1's view call, so
+// the contract carries the tool_result shape the chat reads: the call id,
+// the content, the metadata string and the error flag.
+func fixtureToolMessage(t *testing.T) json.RawMessage {
+	t.Helper()
+	raw := innerPayload(pubsub.Event[message.Message]{Type: pubsub.CreatedEvent, Payload: message.Message{
+		ID: "t-1", SessionID: "s1", Role: message.Tool, CreatedAt: 103, UpdatedAt: 103,
+		Parts: []message.ContentPart{message.ToolResult{
+			ToolCallID: "tc-1", Name: "view", Content: "package parser",
+			Metadata: `{"file_path":"parser.go","content":"package parser"}`,
+		}},
 	}})
 	require.NotNil(t, raw)
 	return raw

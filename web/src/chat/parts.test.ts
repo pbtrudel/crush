@@ -1,0 +1,95 @@
+import { describe, expect, it } from 'vitest'
+
+import type { WireMessage } from '../api/wire'
+import { finishOf, messageParts, parsePart, resultIndex, resultSignature } from './parts'
+
+function message(parts: WireMessage['parts'], id = 'm1'): WireMessage {
+  return { id, role: 'assistant', session_id: 's1', parts, created_at: 1, updated_at: 2 }
+}
+
+describe('messageParts', () => {
+  it('keeps the order the message was written in', () => {
+    const parts = messageParts(
+      message([
+        { type: 'text', data: { text: 'First I read it.' } },
+        { type: 'tool_call', data: { id: 'tc-1', name: 'view', input: '{}' } },
+        { type: 'text', data: { text: 'Then I changed it.' } },
+        { type: 'reasoning', data: { thinking: 'Late thought.' } },
+      ]),
+    )
+    expect(parts.map((part) => part.kind)).toEqual(['text', 'tool_call', 'text', 'reasoning'])
+  })
+
+  it('drops hidden text, unknown types and malformed parts', () => {
+    const parts = messageParts(
+      message([
+        { type: 'text', data: { text: 'model only', hidden: true } },
+        { type: 'not_a_part', data: {} },
+        { type: 'tool_call', data: { name: 'bash' } },
+        { type: 'text', data: { text: 'shown' } },
+      ]),
+    )
+    expect(parts).toEqual([{ kind: 'text', text: 'shown' }])
+  })
+
+  it('answers the same array for the same message object', () => {
+    const same = message([{ type: 'text', data: { text: 'hi' } }])
+    expect(messageParts(same)).toBe(messageParts(same))
+  })
+
+  it('reads a tool result with its defaults', () => {
+    expect(parsePart('tool_result', { tool_call_id: 'tc-1', content: 'ok' })).toEqual({
+      kind: 'tool_result',
+      result: { toolCallId: 'tc-1', name: '', content: 'ok', mimeType: '', metadata: '', isError: false },
+    })
+  })
+
+  it('names an attachment by its path, then its type', () => {
+    expect(parsePart('binary', { Path: '/tmp/shot.png', MIMEType: 'image/png' })).toEqual({
+      kind: 'attachment',
+      name: 'shot.png',
+      mimeType: 'image/png',
+    })
+    expect(parsePart('image_url', { url: 'https://example.com/a.png' })).toEqual({
+      kind: 'attachment',
+      name: 'a.png',
+      mimeType: 'image',
+    })
+  })
+})
+
+describe('finishOf', () => {
+  it('answers the last finish part', () => {
+    const parts = messageParts(message([{ type: 'finish', data: { reason: 'canceled', time: 9 } }]))
+    expect(finishOf(parts)).toEqual({ reason: 'canceled', time: 9, message: '', details: '' })
+    expect(finishOf([])).toBeNull()
+  })
+})
+
+describe('resultIndex', () => {
+  const answered = [
+    message([{ type: 'tool_call', data: { id: 'tc-1', name: 'bash', input: '{}' } }], 'a1'),
+    message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'ok', is_error: true } }], 't1'),
+  ]
+
+  it('finds a result in a later message', () => {
+    expect(resultIndex(answered).get('tc-1')?.isError).toBe(true)
+  })
+
+  it('changes its signature only when a result changes', () => {
+    const before = resultSignature(answered)
+    const token = [...answered, message([{ type: 'text', data: { text: 'more' } }], 'a2')]
+    expect(resultSignature(token)).toBe(before)
+    const another = [...answered, message([{ type: 'tool_result', data: { tool_call_id: 'tc-2' } }], 't2')]
+    expect(resultSignature(another)).not.toBe(before)
+  })
+
+  // A result rewritten where it stands keeps its length, so a signature
+  // built from lengths alone would answer the same key and leave the
+  // memoised index showing the old text.
+  it('changes its signature when a result is rewritten at the same length', () => {
+    const one = [message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'ok' } }], 't1')]
+    const two = [message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'no' } }], 't1')]
+    expect(resultSignature(two)).not.toBe(resultSignature(one))
+  })
+})
