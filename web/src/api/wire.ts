@@ -1,5 +1,10 @@
 import { z, type ZodTypeAny } from 'zod'
 
+// zod 4 compiles object parsers with the Function constructor unless told not
+// to, and the gateway's CSP has no 'unsafe-eval': the probe alone reports
+// a CSP violation in the console. jitless parses the same way, without it.
+z.config({ jitless: true })
+
 export const sessionStatusSchema = z.enum(['idle', 'running', 'queued', 'pending_interaction'])
 export type SessionStatus = z.infer<typeof sessionStatusSchema>
 
@@ -10,11 +15,42 @@ const sessionSchema = z
     title: z.string(),
     message_count: z.number(),
     updated_at: z.number(),
+    // The usage the footer reads. prompt_tokens and completion_tokens are
+    // the last step's context, cost the session's running total.
+    prompt_tokens: z.number().optional(),
+    completion_tokens: z.number().optional(),
+    cost: z.number().optional(),
   })
   .passthrough()
 
 export const sessionRowSchema = sessionSchema.extend({ status: sessionStatusSchema })
 export type SessionRow = z.infer<typeof sessionRowSchema>
+
+// agentRunSchema types one live agent run, which is how the gateway reports
+// the subagents that run outside the session list (internal/agentrun). Only
+// the fields the tab reads are pinned; the rest passes through.
+export const agentRunSchema = z
+  .object({
+    session_id: z.string().optional().default(''),
+    parent_session_id: z.string().optional().default(''),
+    kind: z.string().optional().default(''),
+  })
+  .passthrough()
+export type AgentRun = z.infer<typeof agentRunSchema>
+
+// agentRunsSchema reads a run list row by row: one unreadable run must not
+// cost the tab every run beside it, so a row that fails is dropped instead of
+// failing the whole bootstrap or frame.
+const agentRunsSchema = z.array(z.unknown()).transform((rows) => {
+  const runs: AgentRun[] = []
+  for (const row of rows) {
+    const parsed = agentRunSchema.safeParse(row)
+    if (parsed.success) {
+      runs.push(parsed.data)
+    }
+  }
+  return runs
+})
 
 export const modelInfoSchema = z
   .object({
@@ -41,7 +77,7 @@ export const bootstrapSchema = z
     input_mode: z.enum(['plan', 'code']),
     lsp: z.record(z.string(), serverInfoSchema),
     mcp: z.record(z.string(), serverInfoSchema),
-    agent_runs: z.array(z.unknown()),
+    agent_runs: agentRunsSchema,
   })
   .passthrough()
 export type Bootstrap = z.infer<typeof bootstrapSchema>
@@ -54,6 +90,13 @@ export const messageSchema = z
     parts: z.array(z.object({ type: z.string(), data: z.unknown() })),
     created_at: z.number(),
     updated_at: z.number(),
+    // The model that wrote an assistant message, for the turn footer, the
+    // name the gateway shows it by when it has one, and whether the message
+    // is a compaction summary, which draws no turn footer.
+    model: z.string().optional(),
+    model_name: z.string().optional(),
+    is_summary_message: z.boolean().optional(),
+    provider: z.string().optional(),
   })
   .passthrough()
 export type WireMessage = z.infer<typeof messageSchema>
@@ -131,7 +174,7 @@ export const payloadSchemas: Record<string, ZodTypeAny> = {
   input_mode_changed: z.object({ mode: z.enum(['plan', 'code']) }).passthrough(),
   plan_ready: z.object({ session_id: z.string() }).passthrough(),
   team_state: z.object({ team_id: z.string() }).passthrough(),
-  agent_runs: z.array(z.unknown()),
+  agent_runs: agentRunsSchema,
   model_changed: modelInfoSchema,
   gateway_closing: z.object({ reason: z.string() }).passthrough(),
   web_error: webErrorSchema,

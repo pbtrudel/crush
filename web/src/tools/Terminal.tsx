@@ -1,0 +1,128 @@
+import { clsx } from 'clsx'
+import { useMemo } from 'react'
+
+import { parseAnsi } from './ansi'
+import { clipChars, maxOutputChars, thousands } from './clip'
+import { useReveal } from './reveal'
+import styles from './Terminal.module.css'
+
+export interface TerminalProps {
+  command?: string
+  output: string
+  maxLines?: number
+  // revealKey names the revealed state in the environment, the same way an
+  // OutputBlock does, so "Show all" survives the log remounting the row.
+  revealKey?: string
+}
+
+interface Clipped {
+  text: string
+  lines: number
+  clipped: boolean
+  charClipped: boolean
+}
+
+// countLines counts a document's lines without letting a final newline add
+// an empty one.
+function countLines(text: string): number {
+  const end = text.endsWith('\n') ? text.length - 1 : text.length
+  let lines = 1
+  for (let index = 0; index < end; index += 1) {
+    if (text.charCodeAt(index) === 10) {
+      lines += 1
+    }
+  }
+  return lines
+}
+
+// trimEnd drops the one newline a command leaves behind. A terminal shows
+// the cursor on the next row, not a row of its own, and a card must not end
+// in a blank line or call a full maxLines of output clipped.
+function trimEnd(text: string): string {
+  return text.endsWith('\n') ? text.slice(0, -1) : text
+}
+
+// clipLines cuts output to maxLines lines and maxOutputChars characters
+// before it is parsed. Parsing is a regular expression over the whole
+// string and a tool result can be megabytes, so the scan stops at the
+// limit: only the text a reader can see is parsed, and the reveal parses
+// the rest once.
+function clipLines(text: string, maxLines: number): Clipped {
+  let end = text.length
+  let shown = 1
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) === 10) {
+      shown += 1
+      if (shown > maxLines) {
+        end = index
+        break
+      }
+    }
+  }
+  const lineClipped = shown > maxLines
+  let visible = text.slice(0, end)
+  let charClipped = false
+  if (visible.length > maxOutputChars) {
+    visible = clipChars(visible, maxOutputChars)
+    charClipped = true
+  }
+  const clipped = lineClipped || charClipped
+  return { text: visible, lines: clipped ? countLines(text) : shown, clipped, charClipped }
+}
+
+// Terminal is a command and its output, coloured from the ANSI escapes.
+// The escapes become classes only: the CSP forbids inline style, and no
+// control sequence ever reaches the DOM.
+export default function Terminal({ command = '', output, maxLines = 200, revealKey }: TerminalProps) {
+  const { all, reveal } = useReveal(revealKey)
+  // The clip is memoised by the output, and the parse by the clipped text,
+  // so a re-render costs neither scan nor regex.
+  const text = useMemo(() => trimEnd(output), [output])
+  const shown = useMemo(
+    () =>
+      all
+        ? { text, lines: 0, clipped: false, charClipped: false }
+        : clipLines(text, maxLines),
+    [all, text, maxLines],
+  )
+  const lines = useMemo(() => parseAnsi(shown.text), [shown.text])
+  // The label names the limit that cut the text. The character cap runs
+  // last, so where both apply it is the one to say.
+  const showAll = shown.charClipped
+    ? `Show all (${thousands(text.length)} K characters)`
+    : `Show all ${shown.lines} lines`
+  return (
+    <div className={styles.terminal}>
+      {command !== '' ? (
+        <div className={styles.command}>
+          <span className={styles.prompt} aria-hidden="true">
+            $
+          </span>
+          <span>{command}</span>
+        </div>
+      ) : null}
+      {output !== '' ? (
+        <pre className={styles.output}>
+          {lines.map((line, index) => (
+            <span key={index} className={styles.line}>
+              {line.map((span, position) =>
+                span.classes.length === 0 ? (
+                  span.text
+                ) : (
+                  <span key={position} className={clsx(span.classes.map((name) => styles[name]))}>
+                    {span.text}
+                  </span>
+                ),
+              )}
+            </span>
+          ))}
+        </pre>
+      ) : null}
+      {shown.clipped ? (
+        <button type="button" className={styles.more} onClick={reveal}>
+          {showAll}
+        </button>
+      ) : null}
+    </div>
+  )
+}

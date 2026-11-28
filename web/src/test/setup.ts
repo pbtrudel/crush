@@ -39,6 +39,21 @@ if (typeof Element.prototype.setPointerCapture !== 'function') {
   Element.prototype.hasPointerCapture = () => false
 }
 
+// jsdom has no Element.scrollTo, and the virtualizer scrolls the log with
+// it. The stub writes scrollTop, which a test's scrollState records.
+if (typeof Element.prototype.scrollTo !== 'function') {
+  Element.prototype.scrollTo = function scrollTo(
+    this: Element,
+    options?: ScrollToOptions | number,
+    y?: number,
+  ) {
+    const top = typeof options === 'number' ? y : options?.top
+    if (typeof top === 'number') {
+      this.scrollTop = top
+    }
+  } as Element['scrollTo']
+}
+
 beforeEach(() => {
   resetMediaQueries()
 })

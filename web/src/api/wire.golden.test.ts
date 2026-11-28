@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import golden from '../../../internal/web/testdata/frames.golden.json'
+import { parsePart } from '../chat/parts'
 import { frameSchema, parseFrame, payloadSchemas } from './wire'
 
 const frames = golden as Record<string, unknown>
@@ -71,9 +72,41 @@ describe('the wire contract', () => {
     expect(() => parseFrame(JSON.stringify(extra))).not.toThrow()
   })
 
+  it('drops a malformed agent run without dropping the list', () => {
+    // One unreadable run must not cost the tab every run beside it: the list
+    // is read row by row, in the bootstrap and in the live frame.
+    const good = { session_id: 'a1$$tc-1', parent_session_id: 's1', kind: 'subagent' }
+    const runs = [good, 'not a run', { session_id: 42 }]
+    const bootstrap = structuredClone(frames.bootstrap) as { payload: Record<string, unknown> }
+    bootstrap.payload.agent_runs = runs
+    const parsedBootstrap = parseFrame(JSON.stringify(bootstrap))
+    expect((parsedBootstrap.payload as { agent_runs: unknown[] }).agent_runs).toEqual([
+      { session_id: 'a1$$tc-1', parent_session_id: 's1', kind: 'subagent' },
+    ])
+
+    const frame = { seq: 1, type: 'agent_runs', payload: runs }
+    const parsed = parseFrame(JSON.stringify(frame))
+    expect(parsed.payload).toEqual([{ session_id: 'a1$$tc-1', parent_session_id: 's1', kind: 'subagent' }])
+  })
+
   it('rejects a payload the schema cannot type', () => {
     expect(() =>
       parseFrame(JSON.stringify({ seq: 1, type: 'session_status', payload: { session_id: 's1', status: 'napping' } })),
     ).toThrow()
+  })
+
+  // Every part of a type the chat draws must parse: a renamed Go field
+  // would otherwise drop the part silently instead of failing here.
+  it('parses every part the golden messages carry', () => {
+    const drawn = new Set(['text', 'reasoning', 'tool_call', 'tool_result', 'finish'])
+    const snapshot = frames.session_snapshot as { payload: { messages: { parts: { type: string; data: unknown }[] }[] } }
+    const live = frames.message as { payload: { payload: { parts: { type: string; data: unknown }[] } } }
+    const parts = [...snapshot.payload.messages.flatMap((entry) => entry.parts), ...live.payload.payload.parts]
+    expect(parts.some((part) => part.type === 'tool_result')).toBe(true)
+    for (const part of parts) {
+      if (drawn.has(part.type)) {
+        expect(parsePart(part.type, part.data), part.type).not.toBeNull()
+      }
+    }
   })
 })

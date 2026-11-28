@@ -1,0 +1,163 @@
+.markdown {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+/* The fallback for a source too long, too deep or too broken to parse. */
+.plainText {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote {
+  margin: 6px 0;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 22px;
+}
+
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 12px 0 6px;
+  font-weight: 600;
+}
+
+.markdown h2 {
+  font-size: 1.25em;
+}
+
+.markdown h3 {
+  font-size: 1.12em;
+}
+
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  font-size: 1em;
+}
+
+.markdown blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+}
+
+/* The light business token is 4.23:1 on the page, below AA. The darker
+ * mix reaches 5.55:1; the dark theme keeps the token, which is legible on
+ * its surfaces. chatColors.test.ts pins both. */
+.markdown a {
+  --markdown-link: color-mix(in srgb, var(--dsw-static-deepseek-500) 75%, var(--dsw-static-deepseek-900));
+  color: var(--markdown-link);
+}
+
+:global(html[data-ds-theme='dark']) .markdown a {
+  --markdown-link: var(--dsw-alias-state-business-primary);
+}
+
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.inlineCode,
+.mathSource {
+  padding: 1px 4px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-markdown-code-block, var(--dsw-alias-bg-layer-2));
+  font-family: var(--ds-font-family-code);
+  font-size: 0.92em;
+}
+
+pre.mathSource {
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+/* MathML draws with the browser's own math fonts, so no KaTeX styles or
+   fonts are needed; only the block layout is ours. */
+.mathDisplay {
+  display: block;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.mathInline {
+  display: inline;
+}
+
+.task {
+  list-style: none;
+  margin-left: -20px;
+}
+
+.task input {
+  margin-right: 6px;
+}
+
+.tableScroll {
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.tableScroll table {
+  border-collapse: collapse;
+}
+
+.tableScroll th,
+.tableScroll td {
+  padding: 4px 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+}
+
+.alignLeft {
+  text-align: left;
+}
+
+.alignCenter {
+  text-align: center;
+}
+
+.alignRight {
+  text-align: right;
+}
+
+.imageLink {
+  font-style: italic;
+}
+
+.inertLink {
+  text-decoration: underline dotted;
+}
+
+.rawHtml {
+  font-family: var(--ds-font-family-code);
+  font-size: 0.92em;
+  white-space: pre-wrap;
+}
+
+.footnote {
+  margin-top: 8px;
+  font-size: 0.9em;
+}
+
+.footnoteRef {
+  font-size: 0.75em;
+}

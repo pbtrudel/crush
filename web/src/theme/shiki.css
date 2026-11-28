@@ -1,0 +1,114 @@
+/* Copied from deepseek-harness packages/client/ui-theme/src/styles/shiki.css
+ * at 4b399c39a6d1479cd84ca591b4d7c88e24d38a96. MIT license, see
+ * web/THIRD_PARTY_NOTICES.md. Changes: the light block moved from :root to
+ * body, where the --dsw-* tokens it aliases are defined; the dark selector
+ * was rewritten from body[data-ds-dark-theme] to
+ * html[data-ds-theme='dark'] body; the tok-* classes are new: they carry
+ * the token colours because the CSP forbids the inline styles Shiki would
+ * otherwise emit; the diff palette (--shiki-token-inserted, deleted and
+ * changed, and the tok-inserted, tok-deleted and tok-changed classes) is
+ * new too: the source never defined it, so a diff fence had no colour, and
+ * its light values are mixes of the DSH success, error and warning tokens.
+ * The light palette is also darkened where it missed WCAG AA on the
+ * bluish-50 code surface rgb(249, 250, 251), keeping each hue (old ratio ->
+ * new ratio):
+ *   constant          #1c7ed6  4.02 -> #1a74c6  4.61
+ *   string            #2f9e44  3.30 -> #278238  4.63
+ *   comment           #868e96  3.18 -> #6b737c  4.60
+ *   keyword           #d6336c  4.42 -> #d42b66  4.63
+ *   parameter         #e8590c  3.43 -> #c44b0a  4.61
+ *   string-expression #2b8a3e  4.18 -> #29823b  4.62
+ * function #6741d9 6.03, punctuation #495057 7.82 and link #1971c2 4.80
+ * already passed and are unchanged; the new mixes are 5.11 (inserted),
+ * 5.08 (deleted) and 5.12 (changed). */
+body {
+  --shiki-foreground: var(--dsw-alias-label-primary);
+  --shiki-background: var(--dsw-alias-markdown-code-block);
+  --shiki-token-constant: #1a74c6;
+  --shiki-token-string: #278238;
+  --shiki-token-comment: #6b737c;
+  --shiki-token-keyword: #d42b66;
+  --shiki-token-parameter: #c44b0a;
+  --shiki-token-function: #6741d9;
+  --shiki-token-string-expression: #29823b;
+  --shiki-token-punctuation: #495057;
+  --shiki-token-link: #1971c2;
+  --shiki-token-inserted: color-mix(in srgb, var(--dsw-static-green-500) 45%, var(--dsw-static-green-900)); /* 5.11 */
+  --shiki-token-deleted: color-mix(in srgb, var(--dsw-static-red-600) 85%, var(--dsw-static-red-900)); /* 5.08 */
+  --shiki-token-changed: color-mix(in srgb, var(--dsw-static-amber-600) 60%, var(--dsw-static-amber-900)); /* 5.12 */
+}
+
+html[data-ds-theme='dark'] body {
+  --shiki-token-constant: #4dabf7;
+  --shiki-token-string: #69db7c;
+  --shiki-token-comment: #adb5bd;
+  --shiki-token-keyword: #faa2c1;
+  --shiki-token-parameter: #ffa94d;
+  --shiki-token-function: #b197fc;
+  --shiki-token-string-expression: #8ce99a;
+  --shiki-token-punctuation: #ced4da;
+  --shiki-token-link: #74c0fc;
+  --shiki-token-inserted: var(--dsw-alias-state-success-secondary);
+  --shiki-token-deleted: var(--dsw-alias-state-error-secondary);
+  --shiki-token-changed: var(--dsw-alias-state-warn-secondary);
+}
+
+.tok-constant {
+  color: var(--shiki-token-constant);
+}
+
+.tok-string {
+  color: var(--shiki-token-string);
+}
+
+.tok-comment {
+  color: var(--shiki-token-comment);
+}
+
+.tok-keyword {
+  color: var(--shiki-token-keyword);
+}
+
+.tok-parameter {
+  color: var(--shiki-token-parameter);
+}
+
+.tok-function {
+  color: var(--shiki-token-function);
+}
+
+.tok-string-expression {
+  color: var(--shiki-token-string-expression);
+}
+
+.tok-punctuation {
+  color: var(--shiki-token-punctuation);
+}
+
+.tok-link {
+  color: var(--shiki-token-link);
+}
+
+.tok-inserted {
+  color: var(--shiki-token-inserted);
+}
+
+.tok-deleted {
+  color: var(--shiki-token-deleted);
+}
+
+.tok-changed {
+  color: var(--shiki-token-changed);
+}
+
+.tok-italic {
+  font-style: italic;
+}
+
+.tok-bold {
+  font-weight: 600;
+}
+
+.tok-underline {
+  text-decoration: underline;
+}

@@ -1,0 +1,32 @@
+.copy {
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  /* The action fades to 60% until hover, where the secondary label falls
+   * under AA; the primary label at that opacity measures 4.95:1 on the
+   * light surface and 5.66:1 on the dark one. */
+  --copy-label: var(--dsw-alias-label-primary);
+  color: var(--copy-label);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.copy:hover {
+  color: var(--copy-label);
+}
+
+/* The result is announced by the status region and drawn in the button, so
+ * the region itself is never visible. */
+.status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

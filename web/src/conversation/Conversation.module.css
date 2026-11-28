@@ -6,35 +6,74 @@
 }
 
 .header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
   padding: 8px 14px;
   border-bottom: 1px solid var(--dsw-alias-border-l2);
 }
 
 .title {
+  min-width: 0;
   margin: 0;
+  overflow: hidden;
   font-size: 14px;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.log {
+.body {
+  position: relative;
   display: flex;
   flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  overflow-y: auto;
+  min-height: 0;
 }
 
-.error {
-  margin: 0 12px;
-  padding: 6px 8px;
-  border-radius: var(--dsw-radius-sm);
-  background: var(--dsw-static-red-400-a12, var(--dsw-alias-bg-layer-2));
+/* The browser's own scroll anchoring would fight the virtualizer's
+   adjustments and the prepend rule, so it is off. */
+.log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+}
+
+.spacer {
+  position: relative;
+  width: 100%;
+}
+
+.row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 4px 12px;
+}
+
+.edge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+}
+
+.start {
+  margin: 0;
+  /* The tertiary label is 3.73:1 on the light theme, below AA; the
+     history edge is read, so it takes the secondary one like a footer. */
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
 }
 
 .older {
-  align-self: center;
   padding: 4px 10px;
   border: 1px solid var(--dsw-alias-border-l3);
   border-radius: var(--dsw-radius-sm);
@@ -44,7 +83,29 @@
   cursor: pointer;
 }
 
+.error {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-static-red-400-a12, var(--dsw-alias-bg-layer-2));
+  font-size: 12px;
+}
+
+.toEnd {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  padding: 4px 12px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
 .empty {
   margin: auto;
-  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+  color: var(--dsw-alias-label-secondary);
 }

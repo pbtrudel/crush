@@ -1,0 +1,25 @@
+.summary {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ring {
+  flex: none;
+}
+
+.ringTrack {
+  stroke: var(--dsw-alias-border-l2);
+}
+
+.ringFill {
+  stroke: var(--dsw-alias-state-business-primary);
+}
+
+.ringHigh .ringFill {
+  stroke: var(--dsw-alias-state-warn-primary);
+}

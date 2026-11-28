@@ -109,6 +109,26 @@ func TestFakeListSessionsNewestFirst(t *testing.T) {
 	require.Equal(t, []string{"s0", "s3", "s2", "s1"}, ids)
 }
 
+// TestFakeListSessionsSkipsChildren pins the fake's list to the real
+// service's: ListSessions answers top-level sessions only, so a subagent's
+// session never reaches the sidebar. GetSession still finds the child,
+// which is what a subscribe needs.
+func TestFakeListSessionsSkipsChildren(t *testing.T) {
+	t.Parallel()
+	f := NewFake()
+	f.AddSession(session.Session{ID: "child", ParentSessionID: "s1", Title: "Sub"})
+
+	list, err := f.ListSessions(t.Context())
+	require.NoError(t, err)
+	for _, s := range list {
+		require.NotEqual(t, "child", s.ID, "a child session leaked into the list")
+	}
+
+	child, err := f.GetSession(t.Context(), "child")
+	require.NoError(t, err)
+	require.Equal(t, "s1", child.ParentSessionID)
+}
+
 // TestFakeCreateSessionIDsNeverRepeat pins that deleting a session cannot
 // make the next created ID collide with one still in the map.
 func TestFakeCreateSessionIDsNeverRepeat(t *testing.T) {

@@ -1,0 +1,187 @@
+/* The ANSI palette follows DSH's ui-primitives ansi.ts table, adapted to
+ * this theme: each colour names a semantic token, so the terminal card
+ * stays part of the page instead of carrying a fixed 16-colour palette.
+ *
+ * The light card sits on --dsw-alias-bg-layer-2, a white surface, where
+ * the light tokens of DSH are too pale for body text (green 2.28:1, amber
+ * 2.15:1, business 4.23:1). The light values are mixes of the same token
+ * with its darkest neighbour, keeping each hue and reaching WCAG AA
+ * (4.5:1) on that surface, measured ratios after the rule:
+ *   default 18.90, dim 5.80, red 5.04, bright red 5.79, green 5.33,
+ *   bright green 4.87, yellow 4.90, blue 5.55, magenta 5.66, cyan 5.17
+ *   and bright cyan 5.52.
+ * The dark card is --dsw-alias-bg-layer-2 in the dark theme, rgb(44, 44,
+ * 46), where the tokens themselves are legible (the lowest, the dark
+ * theme's error red, measures 4.24:1, the same colour the status capsule
+ * uses for a failed call). The light palette is the one pinned by
+ * ansi.test.ts. */
+.terminal {
+  --ansi-fg-default: var(--dsw-alias-label-primary);
+  --ansi-fg-dim: var(--dsw-static-neutral-bluish-700);
+  --ansi-fg-red: color-mix(in srgb, var(--dsw-static-red-600) 90%, var(--dsw-static-red-900));
+  --ansi-fg-bright-red: color-mix(in srgb, var(--dsw-static-red-400) 60%, var(--dsw-static-red-900));
+  --ansi-fg-green: color-mix(in srgb, var(--dsw-static-green-500) 45%, var(--dsw-static-green-900));
+  --ansi-fg-bright-green: color-mix(in srgb, var(--dsw-static-green-400) 45%, var(--dsw-static-green-900));
+  --ansi-fg-yellow: color-mix(in srgb, var(--dsw-static-amber-500) 55%, var(--dsw-static-amber-900));
+  --ansi-fg-blue: color-mix(in srgb, var(--dsw-static-deepseek-500) 75%, var(--dsw-static-deepseek-900));
+  --ansi-fg-magenta: #c2255c;
+  --ansi-fg-cyan: var(--dsw-static-blue-600);
+  --ansi-fg-bright-cyan: color-mix(in srgb, var(--dsw-static-blue-500) 65%, var(--dsw-static-blue-900));
+}
+
+:global(html[data-ds-theme='dark']) .terminal {
+  --ansi-fg-dim: var(--dsw-alias-label-tertiary);
+  --ansi-fg-red: var(--dsw-alias-state-error-primary);
+  --ansi-fg-bright-red: var(--dsw-alias-state-error-secondary);
+  --ansi-fg-green: var(--dsw-alias-state-success-primary);
+  --ansi-fg-bright-green: var(--dsw-alias-state-success-secondary);
+  --ansi-fg-yellow: var(--dsw-alias-state-warn-primary);
+  --ansi-fg-blue: var(--dsw-alias-state-business-primary);
+  --ansi-fg-magenta: #f06595;
+  --ansi-fg-cyan: var(--dsw-static-blue-400);
+  --ansi-fg-bright-cyan: var(--dsw-static-blue-300);
+}
+
+.terminal {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  font-family: var(--ds-font-family-code);
+  font-size: var(--crush-font-size-code);
+}
+
+.command {
+  display: flex;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prompt {
+  color: var(--dsw-alias-label-tertiary);
+  user-select: none;
+}
+
+.output {
+  max-height: 480px;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+}
+
+.line {
+  display: block;
+  min-height: 1.5em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.more {
+  align-self: flex-start;
+  margin: 0 10px 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bold {
+  font-weight: 600;
+}
+
+/* Faint text is a colour rather than an opacity: opacity blends the text
+   into whatever sits behind it and takes a passing colour under AA. The
+   dim grey is the same one ansi-fg-dim uses, pinned in ansi.test.ts. A
+   span that also names a colour keeps that colour, because the fg rules
+   come after this one. */
+.dim {
+  color: var(--ansi-fg-dim);
+}
+
+.italic {
+  font-style: italic;
+}
+
+.underline {
+  text-decoration: underline;
+}
+
+/* Black and white both take the primary label colour, which is the
+   foreground on either theme. */
+.fg-black,
+.fg-white,
+.fg-bright-white {
+  color: var(--ansi-fg-default);
+}
+
+.fg-bright-black {
+  color: var(--ansi-fg-dim);
+}
+
+.fg-red {
+  color: var(--ansi-fg-red);
+}
+
+.fg-bright-red {
+  color: var(--ansi-fg-bright-red);
+}
+
+.fg-green {
+  color: var(--ansi-fg-green);
+}
+
+.fg-bright-green {
+  color: var(--ansi-fg-bright-green);
+}
+
+.fg-yellow,
+.fg-bright-yellow {
+  color: var(--ansi-fg-yellow);
+}
+
+.fg-blue,
+.fg-bright-blue {
+  color: var(--ansi-fg-blue);
+}
+
+.fg-magenta,
+.fg-bright-magenta {
+  color: var(--ansi-fg-magenta);
+}
+
+.fg-cyan {
+  color: var(--ansi-fg-cyan);
+}
+
+.fg-bright-cyan {
+  color: var(--ansi-fg-bright-cyan);
+}
+
+.bg-red,
+.bg-bright-red {
+  background: var(--dsw-static-red-400-a12);
+}
+
+.bg-green,
+.bg-bright-green,
+.bg-yellow,
+.bg-bright-yellow,
+.bg-blue,
+.bg-bright-blue,
+.bg-magenta,
+.bg-bright-magenta,
+.bg-cyan,
+.bg-bright-cyan,
+.bg-black,
+.bg-bright-black,
+.bg-white,
+.bg-bright-white {
+  background: var(--dsw-alias-bg-layer-1);
+}

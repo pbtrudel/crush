@@ -2,11 +2,17 @@
 
 ## DeepSeek Harness (deepseek-harness)
 
-The CSS token sheets under `web/src/theme/` are copied from
-<https://github.com/deepseek-ai/deepseek-harness>, package
-`packages/client/ui-theme`, at commit
-`4b399c39a6d1479cd84ca591b4d7c88e24d38a96`. Each copied file names its
-source path in its header comment.
+Files copied or adapted from
+<https://github.com/deepseek-ai/deepseek-harness> at commit
+`4b399c39a6d1479cd84ca591b4d7c88e24d38a96`. Each names its source path in
+its header comment and lists what changed:
+
+- The CSS token sheets under `web/src/theme/` (`packages/client/ui-theme`).
+- `web/src/chat/markdown/parse.ts`
+  (`packages/client/ui-primitives/src/markdown/parse.ts`).
+- `web/src/chat/markdown/highlighter.ts`, in part
+  (`packages/client/ui-primitives/src/markdown/highlight.ts`).
+- `web/src/theme/shiki.css` (`packages/client/ui-theme/src/styles/shiki.css`).
 
 MIT License
 

@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Bootstrap, ParsedFrame } from '../api/wire'
+import { bootstrapSchema, type Bootstrap, type ParsedFrame } from '../api/wire'
 import { memoryStorage } from '../app/storage'
 import {
   connectionNotice,
   createAppStore,
+  emptySessionData,
   isUnread,
   isUnreadRow,
+  maxKnownChildren,
   maxSubscriptions,
   reduceBootstrap,
   reduceFrame,
+  reduceOlderPage,
   visibleError,
+  visibleMessages,
   wantedSubscriptions,
   type AppState,
+  type OlderPageTicket,
   type WireMessage,
 } from './app'
 
@@ -122,7 +127,7 @@ describe('reduceFrame', () => {
     const withCopies = {
       ...start,
       sessionData: {
-        s1: { messages: [copy, copy], hasMore: false, queued: [], files: [], snapshotSeq: 0 },
+        s1: { ...emptySessionData, messages: [copy, copy] },
       },
     }
     const next = reduceFrame(
@@ -319,6 +324,23 @@ describe('AppStore.selectSession', () => {
     store.selectSession('s2')
     expect(isUnread(store.get(), 's2')).toBe(false)
     expect(storage.getItem('crush.seen')).toContain('"s2":40')
+  })
+
+  // The sidebar re-selects the session already on screen when its row is
+  // clicked again. Nothing closed, so the open rows keep the children they
+  // follow and the pages they loaded: clearing them would unsubscribe the
+  // child and leave its transcript loading forever.
+  it('keeps its watched children when the open session is selected again', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+
+    store.selectSession('s1')
+
+    expect(store.get().selectedSessionId).toBe('s1')
+    expect(store.get().watchedChildren).toEqual([child.id])
+    expect(store.get().sessionData[child.id]?.messages.map((entry) => entry.id)).toEqual(['c1'])
   })
 })
 
@@ -691,5 +713,507 @@ describe('web_error frames', () => {
     })
     expect(store.get().selectedSessionId).toBe('s2')
     expect(store.get().error).toBeNull()
+  })
+})
+
+// The paging tests below build their world from these helpers: one page of
+// history, its live frames and a bootstrap that lists the sessions.
+function msg(id: string, text: string, sessionID = 's1'): WireMessage {
+  return {
+    id,
+    role: 'assistant',
+    session_id: sessionID,
+    parts: [{ type: 'text', data: { text } }],
+    created_at: 1,
+    updated_at: 1,
+  }
+}
+
+function snapshot(sessionID: string, messages: WireMessage[], parent = '', busy = false): ParsedFrame {
+  return {
+    seq: 1,
+    type: 'session_snapshot',
+    sessionId: sessionID,
+    payload: {
+      session_id: sessionID,
+      session: { id: sessionID, parent_session_id: parent, title: 'x', message_count: messages.length, updated_at: 1 },
+      messages,
+      has_more: true,
+      busy,
+      queued: [],
+      files: [],
+    },
+  }
+}
+
+// childFrame is the session frame the gateway publishes when it creates or
+// updates a subagent's session. It is a global frame, so it reaches a tab
+// that only follows the parent.
+function childFrame(type: 'created' | 'updated' | 'deleted'): ParsedFrame {
+  return { seq: 4, type: 'session', payload: { type, payload: child } }
+}
+
+// statusFrame is the run state the gateway publishes for a session.
+function statusFrame(sessionID: string, status: string, seq = 5): ParsedFrame {
+  return { seq, type: 'session_status', payload: { session_id: sessionID, status } }
+}
+
+// messageEventFrame is one created, updated or deleted message carrying the
+// message itself. The older helper above names a message by id instead.
+function messageEventFrame(type: 'created' | 'updated' | 'deleted', next: WireMessage): ParsedFrame {
+  return { seq: 2, type: 'message', sessionId: next.session_id, payload: { type, payload: next } }
+}
+
+function bootstrapPayload(sessions: Bootstrap['sessions'], agentRuns: unknown[] = []): Bootstrap {
+  return bootstrapSchema.parse({
+    version: 't',
+    working_dir: '/w',
+    current_session_id: 's1',
+    sessions,
+    model: { id: 'm', name: 'M', provider: 'p', context_window: 1000, agent_ready: true },
+    agent_ready: true,
+    permission_mode: 'ask',
+    input_mode: 'code',
+    lsp: {},
+    mcp: {},
+    agent_runs: agentRuns,
+  })
+}
+
+// agentRunOf is one row of the run registry, the shape the gateway reports in
+// a bootstrap and in every agent_runs frame (internal/agentrun/registry.go).
+function agentRunOf(sessionID: string, kind: 'subagent' | 'teammate' = 'subagent', parent = 's1') {
+  return {
+    id: sessionID,
+    kind,
+    name: 'Map the parser',
+    session_id: sessionID,
+    parent_session_id: parent,
+    status: 'running',
+    started_at: '2026-11-22T12:00:00Z',
+  }
+}
+
+// runFrame is the global frame the gateway publishes when the run list
+// changes.
+function runFrame(runs: unknown[], seq = 7): ParsedFrame {
+  return { seq, type: 'agent_runs', payload: runs }
+}
+
+const top = { id: 's1', parent_session_id: '', title: 'Top', message_count: 1, updated_at: 5, status: 'idle' as const }
+const child = {
+  id: 'a1$$tc-1',
+  parent_session_id: 's1',
+  title: 'Sub',
+  message_count: 1,
+  updated_at: 6,
+  status: 'idle' as const,
+}
+
+describe('older pages', () => {
+  function loaded() {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    store.applyOlderPage(ticket, { messages: [msg('m3', 'three'), msg('m4', 'four')], has_more: true })
+    return store
+  }
+
+  it('asks for the page before the oldest message, once at a time', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1')
+    expect(ticket).toMatchObject({ sessionId: 's1', before: 'm5' })
+    expect(store.beginOlderPage('s1')).toBeNull()
+    expect(store.get().sessionData.s1.loadingOlder).toBe(true)
+  })
+
+  it('pages back from the oldest message already loaded', () => {
+    const store = loaded()
+    expect(store.beginOlderPage('s1')?.before).toBe('m3')
+  })
+
+  it('applies a live edit to a message in a loaded older page', () => {
+    const store = loaded()
+    store.applyFrame(messageEventFrame('updated', msg('m3', 'three, edited')))
+    const data = store.get().sessionData.s1
+    expect(data.older.map((entry) => entry.parts[0].data)).toEqual([{ text: 'three, edited' }, { text: 'four' }])
+    expect(data.messages.map((entry) => entry.id)).toEqual(['m5'])
+  })
+
+  it('applies a live delete to a message in a loaded older page', () => {
+    const store = loaded()
+    store.applyFrame(messageEventFrame('deleted', msg('m4', 'four')))
+    expect(store.get().sessionData.s1.older.map((entry) => entry.id)).toEqual(['m3'])
+  })
+
+  it('drops a page that answers after a resync: the generation moved', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    // The resync replaces the bootstrap before the page answers, and the
+    // new snapshot has not landed yet.
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyOlderPage(ticket, { messages: [msg('m4', 'stale')], has_more: false })
+    const data = store.get().sessionData.s1
+    expect(data.older).toEqual([])
+    expect(data.loadingOlder).toBe(false)
+  })
+
+  it('drops a page that answers after a new snapshot', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    expect(reduceOlderPage(store.get(), ticket, { messages: [msg('m4', 'stale')], has_more: false })).toBe(store.get())
+  })
+
+  it('keeps has_more true when a resync drops loaded pages', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    // The page says the history starts there, so the control goes.
+    store.applyOlderPage(ticket, { messages: [msg('m3', 'three')], has_more: false })
+    expect(store.get().sessionData.s1.hasMore).toBe(false)
+    // The resync drops the page, but history still exists before the
+    // snapshot: dropping the page is what turns has_more back on.
+    store.applyBootstrap(bootstrapPayload([top]))
+    expect(store.get().sessionData.s1.older).toEqual([])
+    expect(store.get().sessionData.s1.hasMore).toBe(true)
+  })
+
+  it('records the reason a page failed', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    store.failOlderPage(ticket, 'no such session')
+    expect(store.get().sessionData.s1).toMatchObject({ loadingOlder: false, olderError: 'no such session' })
+  })
+
+  it('drops a page whose session was released and opened again', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top, { ...top, id: 's2', title: 'Other' }]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    // The tab stops following the session and starts again: its entry is a
+    // new lifetime, and the page that was in flight belongs to the old one.
+    // Generations come from one counter that only ever grows, so the new
+    // entry cannot answer to the ticket the old one handed out.
+    store.selectSession('s2')
+    store.releaseSession('s1')
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    store.applyOlderPage(ticket, { messages: [msg('m4', 'stale')], has_more: false })
+    expect(store.get().sessionData.s1.older).toEqual([])
+  })
+})
+
+describe('visibleMessages', () => {
+  it('shows each id once, oldest first, the loaded page winning', () => {
+    const out = visibleMessages([msg('m1', 'one'), msg('m2', 'two')], [msg('m2', 'echo'), msg('m3', 'three')])
+    expect(out.map((entry) => entry.id)).toEqual(['m1', 'm2', 'm3'])
+    expect(out[1].parts[0].data).toEqual({ text: 'two' })
+  })
+})
+
+describe('subagent sessions', () => {
+  it('keeps a child session out of the rows the bootstrap lists', () => {
+    const state = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrapPayload([top, child]))
+    expect(state.sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('ignores a session frame for a child session', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame({ seq: 3, type: 'session', payload: { type: 'created', payload: child } })
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('opens a watched child from its snapshot without adding a row', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().sessionData[child.id].messages.map((entry) => entry.id)).toEqual(['c1'])
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('drops the snapshot of a child nobody watches', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().sessionData[child.id]).toBeUndefined()
+  })
+
+  it('stops watching a child the workspace deleted', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    expect(wantedSubscriptions(store.get())).toEqual(['s1', child.id])
+    // The subagent is gone, so nothing follows it any more: a watch left
+    // behind would hold a subscription slot for a session that cannot
+    // answer.
+    store.applyFrame({ seq: 5, type: 'session', payload: { type: 'deleted', payload: child } })
+    expect(store.get().watchedChildren).toEqual([])
+    expect(wantedSubscriptions(store.get())).toEqual(['s1'])
+  })
+
+  it('subscribes a watched child after the live sessions, and forgets it on unwatch', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    expect(wantedSubscriptions(store.get())).toEqual(['s1', child.id])
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    store.unwatchChild(child.id)
+    expect(wantedSubscriptions(store.get())).toEqual(['s1'])
+    expect(store.get().sessionData[child.id]).toBeUndefined()
+  })
+
+  it('stops watching children when the selection changes', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top, { ...top, id: 's2', title: 'Other' }]))
+    store.watchChild(child.id)
+    store.selectSession('s2')
+    expect(store.get().watchedChildren).toEqual([])
+  })
+
+  it('records a child session the gateway created, without a row', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('created'))
+    // The tab has to know the child exists: a watch sent before then answers
+    // unknown_session, and this frame is what lets the row try again.
+    expect(store.get().knownChildren).toEqual([child.id])
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('records a child an update names, so a missed created frame still counts', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('updated'))
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('seeds the children it knows from a bootstrap that lists one', () => {
+    const state = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrapPayload([top, child]))
+    expect(state.knownChildren).toEqual([child.id])
+    expect(state.sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('keeps the children it already knew across a bootstrap', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('created'))
+    // A resync lists only top-level sessions, so it cannot say which children
+    // are gone; a watch that outlives the reconnect must not be dropped.
+    store.applyBootstrap(bootstrapPayload([top]))
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('forgets a known child the workspace deleted', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('created'))
+    store.applyFrame(childFrame('deleted'))
+    expect(store.get().knownChildren).toEqual([])
+  })
+
+  it('seeds the children it knows from the runs the bootstrap reports', () => {
+    const state = reduceBootstrap(
+      createAppStore(memoryStorage()).get(),
+      bootstrapPayload([top], [agentRunOf(child.id)]),
+    )
+    expect(state.knownChildren).toEqual([child.id])
+    expect(state.sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('records a child the run frames name', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    // runSubAgent lists the child here right after creating its session, so
+    // the run list is the second way a tab learns the child exists.
+    store.applyFrame(runFrame([agentRunOf(child.id)]))
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('ignores a run that names a top-level session', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(runFrame([agentRunOf('s2', 'teammate', '')]))
+    expect(store.get().knownChildren).toEqual([])
+  })
+
+  it('keeps a watched child known past the cap', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    for (let index = 0; index <= maxKnownChildren; index += 1) {
+      store.applyFrame({
+        seq: 4,
+        type: 'session',
+        payload: { type: 'created', payload: { ...child, id: `a$$tc-${index}` } },
+      })
+    }
+    // An open row must not lose its child to the cap: forgetting it would
+    // end the watch and drop the transcript it is drawing.
+    expect(store.get().knownChildren).toContain(child.id)
+    expect(store.get().knownChildren).not.toContain('a$$tc-0')
+  })
+
+  it('drops a watch the gateway refuses and keeps the child unknown', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'unknown_session', error: 'no such session' }, 6),
+    )
+    // A watch the gateway cannot resolve has to go, or a later frame that
+    // announces the child could never take it again.
+    expect(store.get().watchedChildren).toEqual([])
+    expect(store.get().knownChildren).toEqual([])
+    expect(store.get().refusedChildren).toEqual([child.id])
+    expect(store.get().error?.code).toBe('unknown_session')
+  })
+
+  it('lifts a refusal once a run frame names the child', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'unknown_session', error: 'no such session' }, 6),
+    )
+    store.applyFrame(runFrame([agentRunOf(child.id)]))
+    expect(store.get().refusedChildren).toEqual([])
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('keeps a watch the gateway refused for another reason', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'too_many_subscriptions', error: 'too many' }, 6),
+    )
+    // The session exists; only this connection is full, so the row keeps its
+    // watch and names the reason instead.
+    expect(store.get().watchedChildren).toEqual([child.id])
+    expect(store.get().refusedChildren).toEqual([])
+  })
+
+  it('ignores an unknown_session for a session nobody watches', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(frame('web_error', { session_id: 'a9$$tc-9', code: 'unknown_session', error: 'no' }, 6))
+    expect(store.get().refusedChildren).toEqual([])
+    expect(store.get().error?.code).toBe('unknown_session')
+  })
+
+  it('forgets the oldest child it knew past the cap', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    const ids = Array.from({ length: maxKnownChildren + 1 }, (_, index) => `a$$tc-${index}`)
+    for (const id of ids) {
+      store.applyFrame({
+        seq: 4,
+        type: 'session',
+        payload: { type: 'created', payload: { ...child, id } },
+      })
+    }
+    const known = store.get().knownChildren
+    expect(known).toHaveLength(maxKnownChildren)
+    expect(known).not.toContain(ids[0])
+    expect(known).toContain(ids[ids.length - 1])
+  })
+})
+
+describe("a watched child's run state", () => {
+  it('takes the state from the snapshot the watch answers with', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    expect(store.get().childStatuses[child.id]).toBe('running')
+
+    store.watchChild('a2$$tc-2')
+    store.applyFrame(snapshot('a2$$tc-2', [msg('c2', 'done', 'a2$$tc-2')], 's1', false))
+    expect(store.get().childStatuses['a2$$tc-2']).toBe('idle')
+  })
+
+  it('follows the status frames of a watched child', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    store.applyFrame(statusFrame(child.id, 'pending_interaction'))
+    expect(store.get().childStatuses[child.id]).toBe('pending_interaction')
+    store.applyFrame(statusFrame(child.id, 'idle', 6))
+    expect(store.get().childStatuses[child.id]).toBe('idle')
+  })
+
+  it('ignores the status of a child nobody watches', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(statusFrame('a9$$tc-9', 'running'))
+    expect(store.get().childStatuses).toEqual({})
+  })
+
+  it("drops the state when the watch ends", () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    store.unwatchChild(child.id)
+    expect(store.get().childStatuses).toEqual({})
+  })
+
+  it("drops the state of a child the workspace deleted", () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    store.applyFrame(childFrame('deleted'))
+    expect(store.get().childStatuses).toEqual({})
+    expect(store.get().sessionData[child.id]).toBeUndefined()
+  })
+})
+
+describe('a refusal about a subagent session', () => {
+  it("is cleared when the child's snapshot lands", () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'snapshot_failed', error: 'the session could not be read' }, 6),
+    )
+    expect(store.get().error?.code).toBe('snapshot_failed')
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().error).toBeNull()
+  })
+
+  it('leaves an error about another session alone', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(frame('web_error', { session_id: 's1', code: 'snapshot_failed', error: 'no' }, 6))
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().error?.code).toBe('snapshot_failed')
+  })
+})
+
+describe('model_changed frames', () => {
+  it('replace the bootstrap model the usage footer reads', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame({
+      seq: 4,
+      type: 'model_changed',
+      payload: { id: 'm2', name: 'Bigger', provider: 'p', context_window: 400000, agent_ready: true },
+    })
+    expect(store.get().bootstrap?.model.context_window).toBe(400000)
   })
 })

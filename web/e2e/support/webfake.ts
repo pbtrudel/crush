@@ -16,6 +16,12 @@ export interface PendingWebfake extends Webfake {
   pendingFile: string
 }
 
+// StreamWebfake is an M2 fake whose streamed reply waits for the file the
+// spec writes.
+export interface StreamWebfake extends Webfake {
+  streamFile: string
+}
+
 const root = fileURLToPath(new URL('../../..', import.meta.url))
 const binary = join(tmpdir(), `webfake-e2e-${process.pid}`)
 const startTimeoutMs = 120_000
@@ -25,15 +31,20 @@ const startTimeoutMs = 120_000
 interface RunningWebfake {
   app: Webfake
   // pendingFile is the file the fake waits for, or null when its own timer
-  // opens the permission.
+  // opens the M1 permission or starts the M2 stream.
   pendingFile: string | null
   stop: () => Promise<void>
 }
 
 interface StartOptions {
+  // scenario picks the seed; m1 is the default the shell specs use.
+  scenario?: 'm1' | 'm2'
   // pendingOnFile asks the fake to hold the M1 permission until the spec
   // writes the file, so the change never races a slow page load.
   pendingOnFile?: boolean
+  // streamOnFile asks the M2 fake to start streaming its reply once the spec
+  // writes the file.
+  streamOnFile?: boolean
 }
 
 // buildWebfake compiles the fake gateway once per test process. It has to be a
@@ -70,20 +81,26 @@ function buildWebfake(): Promise<void> {
   return built
 }
 
-// startWebfake runs the binary with the M1 seed on a random loopback port. The
-// gateway prints its launch URL on stdout; the URL carries the token in the
-// fragment, so it is handed to the spec and never logged or put in an error.
+// startWebfake runs the binary with the scenario's seed on a random loopback
+// port. The gateway prints its launch URL on stdout; the URL carries the token
+// in the fragment, so it is handed to the spec and never logged or put in an
+// error.
 async function startWebfake(options: StartOptions = {}): Promise<RunningWebfake> {
   await buildWebfake()
-  const pendingDir = options.pendingOnFile ? mkdtempSync(join(tmpdir(), 'webfake-pending-')) : null
+  const waits = options.pendingOnFile === true || options.streamOnFile === true
+  const pendingDir = waits ? mkdtempSync(join(tmpdir(), 'webfake-pending-')) : null
   const pendingFile = pendingDir === null ? null : join(pendingDir, 'open')
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    WEBFAKE_SCENARIO: 'm1',
+    WEBFAKE_SCENARIO: options.scenario ?? 'm1',
     WEBFAKE_PROJECT_DIR: join(tmpdir(), 'crush-e2e-project'),
   }
   if (pendingFile !== null) {
-    env.WEBFAKE_M1_PENDING_ON_FILE = pendingFile
+    if (options.streamOnFile) {
+      env.WEBFAKE_M2_STREAM_ON_FILE = pendingFile
+    } else {
+      env.WEBFAKE_M1_PENDING_ON_FILE = pendingFile
+    }
   }
   const child = spawn(binary, [], {
     cwd: root,
@@ -151,7 +168,10 @@ process.once('exit', () => {
   rmSync(binary, { force: true })
 })
 
-export const test = base.extend<{ freshApp: PendingWebfake }, { app: Webfake }>({
+export const test = base.extend<
+  { freshApp: PendingWebfake; streamApp: StreamWebfake },
+  { app: Webfake; chatApp: Webfake }
+>({
   // app is the worker's gateway, shared by every spec that just needs a seeded
   // shell. It is already old by the second spec: webfake publishes the M1
   // permission one second after start.
@@ -165,6 +185,28 @@ export const test = base.extend<{ freshApp: PendingWebfake }, { app: Webfake }>(
     // fixture pays for it on the first spec.
     { scope: 'worker', timeout: 300_000 },
   ],
+  // chatApp is the worker's M2 gateway, for the specs that only read the
+  // seeded chat.
+  chatApp: [
+    async ({}, use) => {
+      const running = await startWebfake({ scenario: 'm2' })
+      await use(running.app)
+      await running.stop()
+    },
+    { scope: 'worker', timeout: 300_000 },
+  ],
+  // streamApp is a fresh M2 gateway per test: its reply streams once, when
+  // the spec writes streamFile.
+  streamApp: async ({}, use) => {
+    const running = await startWebfake({ scenario: 'm2', streamOnFile: true })
+    const streamFile = running.pendingFile
+    if (streamFile === null) {
+      await running.stop()
+      throw new Error('webfake did not get a stream file')
+    }
+    await use({ ...running.app, streamFile })
+    await running.stop()
+  },
   // freshApp is a gateway started for one test, for a spec that has to see a
   // change happen on a page that is already open. Its M1 permission waits for
   // the file the spec writes once its page has loaded.

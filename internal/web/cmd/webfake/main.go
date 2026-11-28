@@ -88,6 +88,13 @@ func main() {
 	if m1 {
 		webtest.SeedM1(fake, clock)
 	}
+	// The m2 scenario carries the chat sessions the M2 browser specs drive:
+	// every Markdown block and tool view, a long history, and a reply that
+	// streams in place.
+	m2 := os.Getenv("WEBFAKE_SCENARIO") == "m2"
+	if m2 {
+		webtest.SeedM2(fake, clock)
+	}
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
 	modeRequests := make(chan bool, 8)
@@ -187,6 +194,23 @@ func main() {
 			}()
 		} else {
 			time.AfterFunc(time.Second, func() { webtest.SeedM1Pending(fake) })
+		}
+	}
+	if m2 {
+		// The stream starts when the spec writes the file, so the reply
+		// cannot race a page that boots slowly; without one it starts two
+		// seconds in, for a person watching the dev server. A spec that
+		// reads "Stream a reply" must set WEBFAKE_M2_STREAM_ON_FILE: the
+		// auto-start would otherwise finish before the page opens.
+		step := 150 * time.Millisecond
+		if file := os.Getenv("WEBFAKE_M2_STREAM_ON_FILE"); file != "" {
+			go func() {
+				if waitForFile(runCtx, file) {
+					webtest.PlayM2Stream(runCtx, fake, clock, step)
+				}
+			}()
+		} else {
+			time.AfterFunc(2*time.Second, func() { webtest.PlayM2Stream(runCtx, fake, clock, step) })
 		}
 	}
 	go func() {

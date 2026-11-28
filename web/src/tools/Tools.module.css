@@ -1,0 +1,166 @@
+.call {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.title {
+  flex: none;
+  font-weight: 600;
+}
+
+.summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--ds-font-family-code);
+  font-size: var(--crush-font-size-code);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capsule {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+/* The light state tokens are too pale for 11 px capsule text: the success
+ * green measures 2.29:1 on the white card, the warn amber 2.80, the
+ * business blue 4.22, and the error red 4.38 on the wash it paints. The
+ * light values mix each token with its darkest neighbour, the way
+ * Terminal's palette does, and reach AA: green 5.33, amber 5.85, blue
+ * 5.55 and red 4.91 on the wash. The dark theme keeps the tokens it
+ * already uses, which are legible on its cards. */
+.running {
+  --capsule-running-fg: color-mix(in srgb, var(--dsw-static-deepseek-500) 75%, var(--dsw-static-deepseek-900));
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--capsule-running-fg);
+}
+
+.done {
+  --capsule-done-fg: color-mix(in srgb, var(--dsw-static-green-500) 45%, var(--dsw-static-green-900));
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--capsule-done-fg);
+}
+
+.error {
+  --capsule-error-fg: color-mix(in srgb, var(--dsw-static-red-600) 80%, var(--dsw-static-red-900));
+  background: var(--dsw-static-red-400-a12);
+  color: var(--capsule-error-fg);
+}
+
+.interrupted {
+  --capsule-interrupted-fg: color-mix(in srgb, var(--dsw-static-amber-600) 55%, var(--dsw-static-amber-900));
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--capsule-interrupted-fg);
+}
+
+:global(html[data-ds-theme='dark']) .running {
+  --capsule-running-fg: var(--dsw-alias-state-business-primary);
+}
+
+:global(html[data-ds-theme='dark']) .done {
+  --capsule-done-fg: var(--dsw-alias-state-success-primary);
+}
+
+:global(html[data-ds-theme='dark']) .error {
+  --capsule-error-fg: var(--dsw-alias-state-error-primary);
+}
+
+:global(html[data-ds-theme='dark']) .interrupted {
+  --capsule-interrupted-fg: var(--dsw-alias-state-warn-primary);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sectionLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.output {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pre {
+  max-height: 480px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  font-family: var(--ds-font-family-code);
+  font-size: var(--crush-font-size-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.errorText {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.more {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.note {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.document {
+  max-height: 480px;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.nested {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--dsw-alias-border-l2);
+}

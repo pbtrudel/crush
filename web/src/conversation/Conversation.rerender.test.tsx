@@ -1,19 +1,35 @@
 import { render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { WireMessage } from '../store/app'
+import { stubLayout } from '../test/layout'
 import Conversation from './Conversation'
 
 // The tool row stands in for everything a message draws: counting its renders
 // is how this spec sees a message that rendered again.
 const counters = vi.hoisted(() => ({ toolRows: 0 }))
 
-vi.mock('./ToolCallRow', () => ({
-  default: ({ name, done }: { name: string; done: boolean }) => {
+vi.mock('../tools/ToolCall', () => ({
+  default: ({ call, status }: { call: { name: string }; status: string }) => {
     counters.toolRows += 1
-    return <li>{done ? `${name} answered` : `${name} running`}</li>
+    return <li>{`${call.name} ${status}`}</li>
   },
 }))
+
+// The footer pass is counted to see the memo: the footers are rebuilt when
+// the message list changes, and never while it keeps its identity.
+const footerCalls = vi.hoisted(() => ({ computed: 0 }))
+
+vi.mock('../chat/turns', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../chat/turns')>()
+  return {
+    ...actual,
+    turnFooters: (messages: WireMessage[]) => {
+      footerCalls.computed += 1
+      return actual.turnFooters(messages)
+    },
+  }
+})
 
 const calling: WireMessage = {
   id: 'm1',
@@ -57,8 +73,18 @@ function conversation(messages: WireMessage[]) {
   )
 }
 
+// jsdom reports a zero-height log, and the virtualizer renders no row in
+// an empty viewport. The stub gives it one, so every row is in view.
+let restore: () => void = () => undefined
+
 beforeEach(() => {
+  restore = stubLayout({ viewport: 600, row: 60 })
   counters.toolRows = 0
+  footerCalls.computed = 0
+})
+
+afterEach(() => {
+  restore()
 })
 
 describe('Conversation re-renders', () => {
@@ -80,6 +106,44 @@ describe('Conversation re-renders', () => {
     rerender(conversation([calling, speaking, result('tc-1')]))
     // The answer changes what the call draws, so memoising must not stop it.
     expect(counters.toolRows).toBe(2)
-    expect(screen.getByText('bash answered')).toBeInTheDocument()
+    expect(screen.getByText('bash done')).toBeInTheDocument()
+  })
+
+  // A streamed delta makes a new array, so the footers are rebuilt; the
+  // settled message's footer is the same string, so its view keeps its memo
+  // and does not render again.
+  it('keeps a settled footer still while the last message streams', () => {
+    const prompt: WireMessage = {
+      id: 'm0',
+      role: 'user',
+      session_id: 's1',
+      parts: [],
+      created_at: 1,
+      updated_at: 1,
+    }
+    const finished: WireMessage = {
+      ...calling,
+      model: 'm',
+      parts: [...calling.parts, { type: 'finish', data: { reason: 'end_turn', time: 4 } }],
+    }
+    const { rerender } = render(conversation([prompt, finished, speaking]))
+    expect(counters.toolRows).toBe(1)
+    expect(screen.getByText('m · 3s')).toBeInTheDocument()
+
+    rerender(conversation([prompt, finished, { ...speaking, parts: [{ type: 'text', data: { text: 'hi there' } }] }]))
+    expect(screen.getByText('m · 3s')).toBeInTheDocument()
+    expect(counters.toolRows, 'the settled message with its footer rendered again').toBe(1)
+  })
+
+  it('builds the footers once while the message list keeps its identity', () => {
+    const messages = [calling, speaking]
+    const { rerender } = render(conversation(messages))
+    const computed = footerCalls.computed
+
+    rerender(conversation(messages))
+    expect(footerCalls.computed, 'the same list rebuilt its footers').toBe(computed)
+
+    rerender(conversation([...messages]))
+    expect(footerCalls.computed).toBe(computed + 1)
   })
 })

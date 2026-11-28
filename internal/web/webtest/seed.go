@@ -221,7 +221,7 @@ func (f *Fake) delegate() {
 // path, and a creation time later than every stored version of it.
 func (f *Fake) nextHistory(path string) (version, at int64) {
 	at = time.Now().Unix()
-	sessions, _ := f.ListSessions(context.Background())
+	sessions := f.allSessions()
 	for _, s := range sessions {
 		files, _ := f.ListSessionHistory(context.Background(), s.ID)
 		for _, file := range files {
