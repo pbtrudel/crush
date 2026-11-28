@@ -97,13 +97,16 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
   const sessionID = childSessionId(messageId, call.id)
   const nests = store !== null && environment.renderTranscript !== null && depth < maxAgentDepth
   const known = useKnownChild(nests ? store : null, sessionID)
-  // A watch sent before the subagent's session exists answers unknown_session
-  // and is never retried, so the row subscribes only on evidence that it
-  // exists: the child's own created or updated session frame (or a bootstrap
-  // that listed it), or its call's answer, which proves the run happened. A
-  // finished tool call is not evidence — the provider publishes it before the
-  // tool body runs, and a dispatch creates the session in a goroutine.
-  const watching = nests && (known || result !== undefined)
+  // The gateway's own word that the child exists is the only sign a watch can
+  // rest on: a watch sent before then answers unknown_session and is never
+  // retried, so it would be lost. That word is the child's created or updated
+  // session frame, a run the gateway reports, or a bootstrap that listed
+  // either. A finished tool call is not a sign — the provider publishes it
+  // before the tool body runs, and a dispatch creates the session in a
+  // goroutine — and neither is an answer, because a tool that never got to
+  // run (a refused or blocked fetch) makes no session at all. The watch is
+  // taken as soon as the child is known, even after its answer arrived.
+  const watching = nests && known
   // The cleanup runs on close, on unmount and on StrictMode's extra pass, so
   // the watch is dropped exactly once for each watch taken.
   useEffect(() => {
@@ -118,9 +121,10 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
   const childStatus = useChildStatus(nests ? store : null, sessionID)
   // What the child block draws: its transcript once its snapshot lands, the
   // gateway's refusal if the subscription failed, and a loading note until
-  // either arrives. A refusal is shown only while nothing loaded: the store
-  // keeps just the last web_error, so an old one must not outlive the
-  // transcript it failed to fetch.
+  // either arrives. A refusal is shown only while nothing loaded and no
+  // answer is in hand: the store keeps just the last web_error, so an old one
+  // must not outlive the transcript it failed to fetch, and an answer already
+  // says what the tool did.
   let child: ReactNode = null
   if (nests) {
     if (messages !== undefined && messages.length > 0) {
@@ -128,7 +132,9 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
       // status still counts while it runs, because a correlated snapshot may
       // not have landed yet.
       child = environment.renderTranscript?.(messages, depth + 1, isTurnActive(childStatus) || status === 'running')
-    } else if (error !== null) {
+    } else if (error !== null && result === undefined) {
+      // A refusal the child's row can name: there is no answer to show
+      // instead. With one in hand the answer is the story.
       child = (
         <p className={clsx(styles.note, styles.errorText)} role="alert">
           {`The subagent could not be loaded: ${error.error === '' ? error.code : error.error}`}

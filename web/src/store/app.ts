@@ -1,4 +1,5 @@
 import type {
+  AgentRun,
   Bootstrap,
   MessageEvent,
   ParsedFrame,
@@ -206,9 +207,15 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     // call and one message, so each call owns one watch for as long as its
     // row is open, and a second one for the same id is the same watch.
     watchChild: (sessionID: string) => {
-      store.set((state) =>
-        state.watchedChildren.includes(sessionID) ? {} : { watchedChildren: [...state.watchedChildren, sessionID] },
-      )
+      store.set((state) => {
+        if (state.watchedChildren.includes(sessionID)) {
+          return {}
+        }
+        const watchedChildren = [...state.watchedChildren, sessionID]
+        // A child an open row follows obviously exists, and being known is
+        // what keeps that row watching: the cap may not forget it.
+        return { watchedChildren, knownChildren: rememberChild(state.knownChildren, sessionID, watchedChildren) }
+      })
     },
     // unwatchChild also drops the child's messages and its run state: nobody
     // draws them, and the next watch subscribes afresh and gets a new
@@ -266,13 +273,15 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
   const generation = state.generation + 1
   // A bootstrap lists only top-level sessions, so it cannot say which
   // children are gone: what the tab already knew stays known, or a watch
-  // that outlives a reconnect would never be taken again.
+  // that outlives a reconnect would never be taken again. The runs it reports
+  // are the ones a reload mid-run has to learn its subagents from.
   let knownChildren = state.knownChildren
   for (const row of payload.sessions) {
     if (isChildSession(row)) {
-      knownChildren = rememberChild(knownChildren, row.id)
+      knownChildren = rememberChild(knownChildren, row.id, state.watchedChildren)
     }
   }
+  knownChildren = rememberRuns(knownChildren, payload.agent_runs, state.watchedChildren)
   return {
     ...state,
     bootstrap: payload,
@@ -376,7 +385,7 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         if (event.type === 'deleted') {
           return dropSession(state, id)
         }
-        const knownChildren = rememberChild(state.knownChildren, id)
+        const knownChildren = rememberChild(state.knownChildren, id, state.watchedChildren)
         return knownChildren === state.knownChildren ? state : { ...state, knownChildren }
       }
       // A session deleted in another tab leaves this one the same way a
@@ -436,6 +445,12 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         return state
       }
       return { ...state, bootstrap: { ...state.bootstrap, model: frame.payload as Bootstrap['model'] } }
+    }
+    case 'agent_runs': {
+      // The run registry names the session of every subagent that started.
+      const runs = frame.payload as AgentRun[]
+      const knownChildren = rememberRuns(state.knownChildren, runs, state.watchedChildren)
+      return knownChildren === state.knownChildren ? state : { ...state, knownChildren }
     }
     case 'web_error': {
       return { ...state, error: frame.payload as WebError }
@@ -592,12 +607,49 @@ export const maxKnownChildren = 256
 
 // rememberChild adds a child session id, keeping the input when it was
 // already there so a repeated session frame changes nothing.
-function rememberChild(known: string[], sessionID: string): string[] {
+function rememberChild(known: string[], sessionID: string, watched: readonly string[]): string[] {
   if (known.includes(sessionID)) {
     return known
   }
   const next = [...known, sessionID]
-  return next.length > maxKnownChildren ? next.slice(next.length - maxKnownChildren) : next
+  if (next.length <= maxKnownChildren) {
+    return next
+  }
+  // Trim the oldest ids no open row is watching: forgetting a watched child
+  // would end its row's watch and drop the transcript it is drawing, so the
+  // cap yields to them.
+  const kept = new Set(watched)
+  let excess = next.length - maxKnownChildren
+  const trimmed: string[] = []
+  for (const id of next) {
+    if (excess > 0 && !kept.has(id)) {
+      excess -= 1
+      continue
+    }
+    trimmed.push(id)
+  }
+  return trimmed
+}
+
+// isChildRun reports a run whose session belongs to a subagent: runSubAgent
+// registers the child there right after creating its session, so the run
+// list is a second way to learn that a tool row's session exists.
+function isChildRun(run: AgentRun): boolean {
+  if (run.session_id === '') {
+    return false
+  }
+  return run.kind === 'subagent' || run.parent_session_id !== ''
+}
+
+// rememberRuns adds every child session the run list names.
+function rememberRuns(known: string[], runs: readonly AgentRun[], watched: readonly string[]): string[] {
+  let next = known
+  for (const run of runs) {
+    if (isChildRun(run)) {
+      next = rememberChild(next, run.session_id, watched)
+    }
+  }
+  return next
 }
 
 // withoutStatus drops one child's run state, keeping the input when it was

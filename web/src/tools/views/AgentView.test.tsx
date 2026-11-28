@@ -16,9 +16,30 @@ import { agentView, childSessionId, dispatchView, maxAgentDepth, researchView } 
 const call: ToolCallPart = { id: 'tc-agent', name: 'agent', input: '{"prompt":"Map the parser package"}', finished: true }
 const child = childSessionId('a2', 'tc-agent')
 
-// known lists the child session in the bootstrap, which is what a tab that
-// reloaded while the subagent was running may see.
-function store(known = false) {
+// runOf is one row of the run registry, the shape the gateway reports in a
+// bootstrap and in every agent_runs frame (internal/agentrun/registry.go).
+function runOf(sessionID: string) {
+  return {
+    id: sessionID,
+    kind: 'subagent',
+    name: 'Map the parser',
+    session_id: sessionID,
+    parent_session_id: 's1',
+    status: 'running',
+    started_at: '2026-11-22T12:00:00Z',
+  }
+}
+
+interface StoreOptions {
+  // listed puts the child in the bootstrap's session list, which a gateway
+  // does not do today but a reload may.
+  listed?: boolean
+  // runs lists the child among the live agent runs, which is what a tab that
+  // reloaded while the subagent was running really sees.
+  runs?: boolean
+}
+
+function store({ listed = false, runs = false }: StoreOptions = {}) {
   const created = createAppStore(memoryStorage())
   created.applyBootstrap(
     bootstrapSchema.parse({
@@ -27,7 +48,7 @@ function store(known = false) {
       current_session_id: 's1',
       sessions: [
         { id: 's1', parent_session_id: '', title: 'Top', message_count: 1, updated_at: 1, status: 'running' },
-        ...(known
+        ...(listed
           ? [{ id: child, parent_session_id: 's1', title: 'Sub', message_count: 0, updated_at: 1, status: 'running' }]
           : []),
       ],
@@ -37,10 +58,16 @@ function store(known = false) {
       input_mode: 'code',
       lsp: {},
       mcp: {},
-      agent_runs: [],
+      agent_runs: runs ? [runOf(child)] : [],
     }),
   )
   return created
+}
+
+// runsFrame is the global frame the gateway publishes when its run list
+// changes.
+function runsFrame(sessionID: string): ParsedFrame {
+  return { seq: 6, type: 'agent_runs', payload: [runOf(sessionID)] }
 }
 
 // childCreated is the global session frame the gateway publishes when it
@@ -209,10 +236,57 @@ describe('the agent view', () => {
   })
 
   it('watches a child a reload already listed, as soon as the row opens', async () => {
-    const chat = store(true)
+    const chat = store({ listed: true })
     render(<Harness chat={chat} call={call} />)
     await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
     expect(chat.get().watchedChildren).toEqual([child])
+  })
+
+  it('watches a child a reload only reports in its agent runs', async () => {
+    const chat = store({ runs: true })
+    render(<Harness chat={chat} call={call} />)
+    await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
+    expect(chat.get().watchedChildren).toEqual([child])
+    act(() => chat.applyFrame(childSnapshot([childCall])))
+    expect(screen.getByRole('button', { name: /Read/ })).toHaveTextContent('/tmp/project/lexer.go')
+  })
+
+  it('marks a child known from a live run frame', async () => {
+    const chat = store()
+    render(<Harness chat={chat} call={call} />)
+    await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
+    expect(chat.get().watchedChildren).toEqual([])
+    act(() => chat.applyFrame(runsFrame(child)))
+    expect(chat.get().watchedChildren).toEqual([child])
+  })
+
+  it('shows a refused research answer without claiming the child failed', async () => {
+    const chat = store()
+    render(<Harness chat={chat} call={{ ...call, name: 'agentic_fetch' }} result={answer('Search is blocked.')} />)
+    await userEvent.click(screen.getByRole('button', { name: /Research/ }))
+    // A fetch the agent never got to run makes no session, so the row must
+    // not subscribe (and be refused) on the strength of its answer alone.
+    expect(chat.get().watchedChildren).toEqual([])
+    expect(screen.getByText('Search is blocked.')).toBeInTheDocument()
+    // A refusal that arrives anyway is not news when there is an answer.
+    act(() => chat.applyFrame(childError('unknown_session', 'no such session')))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('watches a dispatch child that becomes known after its answer', async () => {
+    const chat = store()
+    render(
+      <Harness chat={chat} call={{ ...call, name: 'agent_dispatch' }} result={answer('Started subagent "audit".')} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
+    expect(chat.get().watchedChildren).toEqual([])
+
+    act(() => chat.applyFrame(childCreated()))
+    // The row follows its child as soon as it is told the child exists, with
+    // no close and reopen.
+    expect(chat.get().watchedChildren).toEqual([child])
+    act(() => chat.applyFrame(childSnapshot([childCall])))
+    expect(screen.getByRole('button', { name: /Read/ })).toHaveTextContent('/tmp/project/lexer.go')
   })
 
   it('surfaces a gateway error about the child on the parent row', async () => {
@@ -227,8 +301,10 @@ describe('the agent view', () => {
   })
 
   it("stops naming a child's refusal once its snapshot lands", async () => {
-    const chat = view(store(), answer('Started subagent "parser-audit".'))
+    const chat = store()
+    render(<Harness chat={chat} call={call} />)
     const header = screen.getByRole('button', { name: /Agent/ })
+    act(() => chat.applyFrame(childCreated()))
     await userEvent.click(header)
     act(() => chat.applyFrame(childError('unknown_session', 'no such session')))
     expect(screen.getByRole('alert')).toBeInTheDocument()
@@ -251,6 +327,7 @@ describe('the agent view', () => {
       <Harness chat={chat} call={{ ...call, name: 'agent_dispatch' }} result={answer('Started subagent "parser-audit".')} />,
     )
     await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
+    act(() => chat.applyFrame(childCreated()))
     // The dispatch row answered at once, but the child is still working.
     act(() => chat.applyFrame(childSnapshot([childCalls, childAnswer], true)))
     expect(screen.getByRole('button', { name: /Read/ })).toHaveTextContent('Done')
@@ -262,7 +339,7 @@ describe('the agent view', () => {
   })
 
   it('watches once under StrictMode and unwatches on the final unmount', async () => {
-    const chat = store(true)
+    const chat = store({ listed: true })
     const watch = vi.spyOn(chat, 'watchChild')
     const unwatch = vi.spyOn(chat, 'unwatchChild')
     const { unmount } = render(<Harness chat={chat} call={call} strict />)
@@ -279,7 +356,7 @@ describe('the agent view', () => {
   })
 
   it('stops nesting at the deepest level and shows the answer alone', async () => {
-    const chat = store(true)
+    const chat = store({ listed: true })
     render(<Harness chat={chat} call={call} result={answer('The **final** answer.')} depth={maxAgentDepth} />)
     await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
     expect(chat.get().watchedChildren).toEqual([])
@@ -288,7 +365,7 @@ describe('the agent view', () => {
   })
 
   it('nests one level above the deepest level', async () => {
-    const chat = store(true)
+    const chat = store({ listed: true })
     render(<Harness chat={chat} call={call} depth={maxAgentDepth - 1} />)
     await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
     expect(chat.get().watchedChildren).toEqual([child])

@@ -747,7 +747,7 @@ function messageEventFrame(type: 'created' | 'updated' | 'deleted', next: WireMe
   return { seq: 2, type: 'message', sessionId: next.session_id, payload: { type, payload: next } }
 }
 
-function bootstrapPayload(sessions: Bootstrap['sessions']): Bootstrap {
+function bootstrapPayload(sessions: Bootstrap['sessions'], agentRuns: unknown[] = []): Bootstrap {
   return bootstrapSchema.parse({
     version: 't',
     working_dir: '/w',
@@ -759,8 +759,28 @@ function bootstrapPayload(sessions: Bootstrap['sessions']): Bootstrap {
     input_mode: 'code',
     lsp: {},
     mcp: {},
-    agent_runs: [],
+    agent_runs: agentRuns,
   })
+}
+
+// agentRunOf is one row of the run registry, the shape the gateway reports in
+// a bootstrap and in every agent_runs frame (internal/agentrun/registry.go).
+function agentRunOf(sessionID: string, kind: 'subagent' | 'teammate' = 'subagent', parent = 's1') {
+  return {
+    id: sessionID,
+    kind,
+    name: 'Map the parser',
+    session_id: sessionID,
+    parent_session_id: parent,
+    status: 'running',
+    started_at: '2026-11-22T12:00:00Z',
+  }
+}
+
+// runFrame is the global frame the gateway publishes when the run list
+// changes.
+function runFrame(runs: unknown[], seq = 7): ParsedFrame {
+  return { seq, type: 'agent_runs', payload: runs }
 }
 
 const top = { id: 's1', parent_session_id: '', title: 'Top', message_count: 1, updated_at: 5, status: 'idle' as const }
@@ -984,6 +1004,48 @@ describe('subagent sessions', () => {
     store.applyFrame(childFrame('created'))
     store.applyFrame(childFrame('deleted'))
     expect(store.get().knownChildren).toEqual([])
+  })
+
+  it('seeds the children it knows from the runs the bootstrap reports', () => {
+    const state = reduceBootstrap(
+      createAppStore(memoryStorage()).get(),
+      bootstrapPayload([top], [agentRunOf(child.id)]),
+    )
+    expect(state.knownChildren).toEqual([child.id])
+    expect(state.sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('records a child the run frames name', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    // runSubAgent lists the child here right after creating its session, so
+    // the run list is the second way a tab learns the child exists.
+    store.applyFrame(runFrame([agentRunOf(child.id)]))
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('ignores a run that names a top-level session', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(runFrame([agentRunOf('s2', 'teammate', '')]))
+    expect(store.get().knownChildren).toEqual([])
+  })
+
+  it('keeps a watched child known past the cap', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    for (let index = 0; index <= maxKnownChildren; index += 1) {
+      store.applyFrame({
+        seq: 4,
+        type: 'session',
+        payload: { type: 'created', payload: { ...child, id: `a$$tc-${index}` } },
+      })
+    }
+    // An open row must not lose its child to the cap: forgetting it would
+    // end the watch and drop the transcript it is drawing.
+    expect(store.get().knownChildren).toContain(child.id)
+    expect(store.get().knownChildren).not.toContain('a$$tc-0')
   })
 
   it('forgets the oldest child it knew past the cap', () => {
