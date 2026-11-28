@@ -78,7 +78,8 @@ type Options struct {
 	// automationTimeout overrides how long the automation route waits for
 	// the terminal's reply in tests.
 	automationTimeout time.Duration
-	// idleTimeout overrides the idle read deadline in tests.
+	// idleTimeout overrides the idle limit in tests. The keep-alive ping
+	// interval follows it, so a shorter limit also pings sooner.
 	idleTimeout time.Duration
 	// teamPollInterval overrides teamPollInterval in tests.
 	teamPollInterval time.Duration

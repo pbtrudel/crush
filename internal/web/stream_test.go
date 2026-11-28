@@ -302,17 +302,67 @@ func TestSinceAheadOfHeadOrMalformedGetsBootstrap(t *testing.T) {
 	}
 }
 
-func TestIdleConnectionIsClosed(t *testing.T) {
+// idleWindow is the idle limit the keep-alive tests run with: short enough
+// that a few windows pass inside a test, and with a ping interval inside it.
+const idleWindow = 150 * time.Millisecond
+
+// TestHiddenTabStaysConnected pins what keeps a background tab alive. Its
+// JavaScript timer is throttled to about once a minute once it has been
+// hidden for five, so it sends nothing for longer than the idle limit, but it
+// still answers the gateway's own ping, which comes well inside the limit.
+func TestHiddenTabStaysConnected(t *testing.T) {
 	t.Parallel()
-	g, err := Start(t.Context(), Options{Workspace: webtestFake(), idleTimeout: 150 * time.Millisecond})
+	g, err := Start(t.Context(), Options{Workspace: webtestFake(), idleTimeout: idleWindow})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	c := dialStream(t, g, "")
+	require.Equal(t, frameBootstrap, readFrame(t, c).Type)
+
+	// A socket that reads and nothing else answers the protocol pings.
+	frames := make(chan testFrame, 8)
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, data, err := c.Read(ctx)
+			cancel()
+			if err != nil {
+				close(frames)
+				return
+			}
+			var f testFrame
+			if json.Unmarshal(data, &f) == nil {
+				frames <- f
+			}
+		}
+	}()
+
+	time.Sleep(4 * idleWindow)
+	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
+	select {
+	case f, ok := <-frames:
+		require.True(t, ok, "the connection stayed open")
+		require.Equal(t, frameSessionSnapshot, f.Type)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gateway dropped a tab that answered every ping")
+	}
+}
+
+// TestUnansweredPingDropsTheConnection pins the other half: a client that
+// stops reading cannot answer a ping, so the gateway drops it without waiting
+// for a message the tab would never send.
+func TestUnansweredPingDropsTheConnection(t *testing.T) {
+	t.Parallel()
+	g, err := Start(t.Context(), Options{Workspace: webtestFake(), idleTimeout: idleWindow})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
 	c := dialStream(t, g, "")
 	readFrame(t, c)
+	// No read is in flight, so the client never sees the pings.
+	time.Sleep(4 * idleWindow)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	_, _, err = c.Read(ctx)
-	require.Error(t, err, "a client that never pings must be dropped")
+	require.Error(t, err, "a client that never answers a ping must be dropped")
 	require.NoError(t, ctx.Err(), "the gateway closed it, not the test deadline")
 }
 

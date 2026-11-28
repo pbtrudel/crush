@@ -356,6 +356,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 	defer g.hub.detach(c)
 
 	go g.readLoop(ctx, cancel, c, ws)
+	go g.keepAlive(ctx, ws)
 
 	if needBootstrap {
 		raw, err := json.Marshal(g.buildBootstrap(ctx))
@@ -396,16 +397,46 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// readLoop reads the client's messages and cancels the connection when it
-// goes quiet for the idle timeout. A subscribe or unsubscribe is handled
+// keepAlive pings the client on an interval well inside the idle limit and
+// ends the connection when a pong does not come back. A browser answers a
+// WebSocket protocol ping natively, with no JavaScript, so this is what keeps
+// a hidden tab alive: Chrome throttles a tab's timers to about once a minute
+// after five hidden minutes, which is longer than the idle limit, so the
+// tab's own interval ping cannot arrive in time.
+func (g *Gateway) keepAlive(ctx context.Context, ws *websocket.Conn) {
+	every := g.idle / 3
+	if every <= 0 {
+		every = g.idle
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pctx, cancel := context.WithTimeout(ctx, g.idle)
+			err := ws.Ping(pctx)
+			cancel()
+			if err != nil {
+				// No pong: the tab is gone or cannot answer, so close the
+				// socket and let the read loop end with it.
+				_ = ws.CloseNow()
+				return
+			}
+		}
+	}
+}
+
+// readLoop reads the client's messages. A subscribe or unsubscribe is handled
 // here; its reply travels the connection's queue, so the single writer loop
-// stays the only thing writing to the socket.
+// stays the only thing writing to the socket. Liveness is keepAlive's job: a
+// read that never answers a ping ends there, so the read itself has no
+// deadline of its own.
 func (g *Gateway) readLoop(ctx context.Context, cancel context.CancelFunc, c *conn, ws *websocket.Conn) {
 	defer cancel()
 	for {
-		rctx, rcancel := context.WithTimeout(ctx, g.idle)
-		typ, data, err := ws.Read(rctx)
-		rcancel()
+		typ, data, err := ws.Read(ctx)
 		if err != nil {
 			return
 		}
