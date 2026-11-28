@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 
 import type { ApiClient } from '../api/http'
+import { useSessionChoice } from '../layout/AppFrame'
 import { isUnreadRow, type AppState, type AppStore } from '../store/app'
 import { useStore, type Store } from '../store/store'
 import Sidebar from './Sidebar'
@@ -41,13 +42,18 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
 
   const dismissError = useCallback(() => setError(null), [])
 
+  // The frame closes a narrow drawer once a session is picked and takes the
+  // focus with it; outside a frame the callback does nothing.
+  const chooseSession = useSessionChoice()
+
   const select = useCallback(
     (id: string) => {
       // Selecting only records the choice. useGateway subscribes the new
       // session and drops the old one when it is idle.
       store.selectSession(id)
+      chooseSession()
     },
-    [store],
+    [store, chooseSession],
   )
 
   const create = useCallback(() => {

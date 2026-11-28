@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { memoryStorage } from '../app/storage'
 import SessionRow from '../sidebar/SessionRow'
 import { setMediaQueryMatches } from '../test/mediaQueries'
-import AppFrame from './AppFrame'
+import AppFrame, { useSessionChoice } from './AppFrame'
 
 const narrowQuery = '(max-width: 767px)'
 const darkQuery = '(prefers-color-scheme: dark)'
@@ -223,6 +223,57 @@ describe('AppFrame', () => {
 
     await user.keyboard('{Escape}')
     expect(frame?.getAttribute('data-drawer')).toBe('false')
+  })
+
+  it('closes the drawer and takes focus when the sidebar picks a session', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    // The sidebar reaches the frame through the context, because the frame
+    // takes the sidebar as an element.
+    function Picker() {
+      const choose = useSessionChoice()
+      return (
+        <button type="button" onClick={choose}>
+          pick
+        </button>
+      )
+    }
+    const { container } = render(
+      <AppFrame sidebar={<Picker />}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    expect(frame?.getAttribute('data-drawer')).toBe('true')
+
+    await user.click(screen.getByRole('button', { name: 'pick' }))
+    expect(frame?.getAttribute('data-drawer')).toBe('false')
+    // The pick revealed the conversation, so the focus goes there instead of
+    // back to the opener the person has moved past.
+    expect(document.activeElement).toBe(screen.getByRole('main'))
+  })
+
+  it('leaves the columns alone when a session is picked in a wide window', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, false)
+    function Picker() {
+      const choose = useSessionChoice()
+      return (
+        <button type="button" onClick={choose}>
+          pick
+        </button>
+      )
+    }
+    const { container } = render(
+      <AppFrame sidebar={<Picker />}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'pick' }))
+    expect(frame?.getAttribute('data-collapsed')).toBe('false')
+    expect(screen.getByText('conversation')).toBeInTheDocument()
   })
 
   it('traps Tab inside the drawer', async () => {
