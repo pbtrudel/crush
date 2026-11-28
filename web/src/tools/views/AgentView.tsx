@@ -11,6 +11,10 @@ import OutputBlock, { ToolSection } from '../OutputBlock'
 import styles from '../Tools.module.css'
 import type { ToolBodyProps, ToolView } from '../view'
 
+// unknownSessionCode is the gateway's answer to a subscribe for a session it
+// does not have (internal/web/stream.go handleSubscribe).
+const unknownSessionCode = 'unknown_session'
+
 // maxAgentDepth stops the tree: a subagent's subagent's subagent shows its
 // answer only, so one runaway delegation cannot nest the log forever.
 export const maxAgentDepth = 3
@@ -66,6 +70,17 @@ function useKnownChild(store: ChatStore | null, sessionID: string): boolean {
   )
 }
 
+// useRefusedChild answers whether the gateway answered unknown_session for
+// this child's watch. The store drops the watch then, so the row must stop
+// asking until a frame announces the child.
+function useRefusedChild(store: ChatStore | null, sessionID: string): boolean {
+  return useSyncExternalStore(
+    store === null ? noSubscribe : store.subscribe,
+    () => store?.get().refusedChildren.includes(sessionID) === true,
+    neverKnown,
+  )
+}
+
 // useChildStatus follows the child's own run state. A subagent keeps working
 // after its parent's tool row answered, so the row's status is not the
 // child's.
@@ -97,16 +112,19 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
   const sessionID = childSessionId(messageId, call.id)
   const nests = store !== null && environment.renderTranscript !== null && depth < maxAgentDepth
   const known = useKnownChild(nests ? store : null, sessionID)
-  // The gateway's own word that the child exists is the only sign a watch can
-  // rest on: a watch sent before then answers unknown_session and is never
-  // retried, so it would be lost. That word is the child's created or updated
-  // session frame, a run the gateway reports, or a bootstrap that listed
-  // either. A finished tool call is not a sign — the provider publishes it
-  // before the tool body runs, and a dispatch creates the session in a
-  // goroutine — and neither is an answer, because a tool that never got to
-  // run (a refused or blocked fetch) makes no session at all. The watch is
-  // taken as soon as the child is known, even after its answer arrived.
-  const watching = nests && known
+  const refused = useRefusedChild(nests ? store : null, sessionID)
+  // Two things justify a watch. The gateway's own word that the child exists
+  // — its created or updated session frame, a run it reports, or a bootstrap
+  // that listed either — because a watch sent before then answers
+  // unknown_session. Or the call's answer: a row reopened after a reload may
+  // be a settled run whose run is pruned and whose session was never listed,
+  // and the gateway can still resolve that persisted session. A finished tool
+  // call is neither — the provider publishes it before the tool body runs,
+  // and a dispatch creates the session in a goroutine. Once the gateway
+  // refuses the child, the row waits for it to be announced, which the store
+  // reports here as `refused`; that is what keeps a fetch that never ran from
+  // retrying forever.
+  const watching = nests && (known || (result !== undefined && !refused))
   // The cleanup runs on close, on unmount and on StrictMode's extra pass, so
   // the watch is dropped exactly once for each watch taken.
   useEffect(() => {
@@ -132,9 +150,11 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
       // status still counts while it runs, because a correlated snapshot may
       // not have landed yet.
       child = environment.renderTranscript?.(messages, depth + 1, isTurnActive(childStatus) || status === 'running')
-    } else if (error !== null && result === undefined) {
-      // A refusal the child's row can name: there is no answer to show
-      // instead. With one in hand the answer is the story.
+    } else if (error !== null && (result === undefined || error.code !== unknownSessionCode)) {
+      // Any refusal but a missing session is news: the session may exist and
+      // only this connection or this read failed, so the row names it rather
+      // than waiting. A missing session with an answer in hand is not news —
+      // the answer is the story.
       child = (
         <p className={clsx(styles.note, styles.errorText)} role="alert">
           {`The subagent could not be loaded: ${error.error === '' ? error.code : error.error}`}

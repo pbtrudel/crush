@@ -1048,6 +1048,54 @@ describe('subagent sessions', () => {
     expect(store.get().knownChildren).not.toContain('a$$tc-0')
   })
 
+  it('drops a watch the gateway refuses and keeps the child unknown', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'unknown_session', error: 'no such session' }, 6),
+    )
+    // A watch the gateway cannot resolve has to go, or a later frame that
+    // announces the child could never take it again.
+    expect(store.get().watchedChildren).toEqual([])
+    expect(store.get().knownChildren).toEqual([])
+    expect(store.get().refusedChildren).toEqual([child.id])
+    expect(store.get().error?.code).toBe('unknown_session')
+  })
+
+  it('lifts a refusal once a run frame names the child', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'unknown_session', error: 'no such session' }, 6),
+    )
+    store.applyFrame(runFrame([agentRunOf(child.id)]))
+    expect(store.get().refusedChildren).toEqual([])
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('keeps a watch the gateway refused for another reason', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'too_many_subscriptions', error: 'too many' }, 6),
+    )
+    // The session exists; only this connection is full, so the row keeps its
+    // watch and names the reason instead.
+    expect(store.get().watchedChildren).toEqual([child.id])
+    expect(store.get().refusedChildren).toEqual([])
+  })
+
+  it('ignores an unknown_session for a session nobody watches', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(frame('web_error', { session_id: 'a9$$tc-9', code: 'unknown_session', error: 'no' }, 6))
+    expect(store.get().refusedChildren).toEqual([])
+    expect(store.get().error?.code).toBe('unknown_session')
+  })
+
   it('forgets the oldest child it knew past the cap', () => {
     const store = createAppStore(memoryStorage())
     store.applyBootstrap(bootstrapPayload([top]))
@@ -1123,9 +1171,9 @@ describe('a refusal about a subagent session', () => {
     store.applyBootstrap(bootstrapPayload([top]))
     store.watchChild(child.id)
     store.applyFrame(
-      frame('web_error', { session_id: child.id, code: 'unknown_session', error: 'no such session' }, 6),
+      frame('web_error', { session_id: child.id, code: 'snapshot_failed', error: 'the session could not be read' }, 6),
     )
-    expect(store.get().error?.code).toBe('unknown_session')
+    expect(store.get().error?.code).toBe('snapshot_failed')
     store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
     expect(store.get().error).toBeNull()
   })

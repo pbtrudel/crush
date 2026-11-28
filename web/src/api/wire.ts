@@ -38,6 +38,20 @@ export const agentRunSchema = z
   .passthrough()
 export type AgentRun = z.infer<typeof agentRunSchema>
 
+// agentRunsSchema reads a run list row by row: one unreadable run must not
+// cost the tab every run beside it, so a row that fails is dropped instead of
+// failing the whole bootstrap or frame.
+const agentRunsSchema = z.array(z.unknown()).transform((rows) => {
+  const runs: AgentRun[] = []
+  for (const row of rows) {
+    const parsed = agentRunSchema.safeParse(row)
+    if (parsed.success) {
+      runs.push(parsed.data)
+    }
+  }
+  return runs
+})
+
 export const modelInfoSchema = z
   .object({
     id: z.string(),
@@ -63,7 +77,7 @@ export const bootstrapSchema = z
     input_mode: z.enum(['plan', 'code']),
     lsp: z.record(z.string(), serverInfoSchema),
     mcp: z.record(z.string(), serverInfoSchema),
-    agent_runs: z.array(agentRunSchema),
+    agent_runs: agentRunsSchema,
   })
   .passthrough()
 export type Bootstrap = z.infer<typeof bootstrapSchema>
@@ -156,7 +170,7 @@ export const payloadSchemas: Record<string, ZodTypeAny> = {
   input_mode_changed: z.object({ mode: z.enum(['plan', 'code']) }).passthrough(),
   plan_ready: z.object({ session_id: z.string() }).passthrough(),
   team_state: z.object({ team_id: z.string() }).passthrough(),
-  agent_runs: z.array(agentRunSchema),
+  agent_runs: agentRunsSchema,
   model_changed: modelInfoSchema,
   gateway_closing: z.object({ reason: z.string() }).passthrough(),
   web_error: webErrorSchema,

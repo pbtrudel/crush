@@ -260,33 +260,65 @@ describe('the agent view', () => {
     expect(chat.get().watchedChildren).toEqual([child])
   })
 
-  it('shows a refused research answer without claiming the child failed', async () => {
+  it('shows a refused research answer without a red alert', async () => {
     const chat = store()
     render(<Harness chat={chat} call={{ ...call, name: 'agentic_fetch' }} result={answer('Search is blocked.')} />)
     await userEvent.click(screen.getByRole('button', { name: /Research/ }))
-    // A fetch the agent never got to run makes no session, so the row must
-    // not subscribe (and be refused) on the strength of its answer alone.
-    expect(chat.get().watchedChildren).toEqual([])
-    expect(screen.getByText('Search is blocked.')).toBeInTheDocument()
-    // A refusal that arrives anyway is not news when there is an answer.
+    // The answer is a reason to try the watch: a settled run may have left no
+    // trace in any list the reload saw.
+    expect(chat.get().watchedChildren).toEqual([child])
     act(() => chat.applyFrame(childError('unknown_session', 'no such session')))
+    // A fetch that never ran makes no session, and that is not news when
+    // there is an answer.
     expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText('Search is blocked.')).toBeInTheDocument()
+    // The refusal drops the watch, so it is not retried until the child is
+    // announced.
+    expect(chat.get().watchedChildren).toEqual([])
   })
 
-  it('watches a dispatch child that becomes known after its answer', async () => {
+  it('watches a settled row the reload knows nothing about', async () => {
+    const chat = store()
+    render(<Harness chat={chat} call={call} result={answer('The parser has **two** files.')} />)
+    await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
+    // No run is listed and no frame named the child: its answer is the only
+    // thing left, and the gateway can still resolve the persisted session.
+    expect(chat.get().watchedChildren).toEqual([child])
+    act(() => chat.applyFrame(childSnapshot([childCall])))
+    expect(screen.getByRole('button', { name: /Read/ })).toHaveTextContent('/tmp/project/lexer.go')
+  })
+
+  it('re-watches a dispatch child the gateway refused once a run names it', async () => {
     const chat = store()
     render(
       <Harness chat={chat} call={{ ...call, name: 'agent_dispatch' }} result={answer('Started subagent "audit".')} />,
     )
     await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
+    expect(chat.get().watchedChildren).toEqual([child])
+    act(() => chat.applyFrame(childError('unknown_session', 'no such session')))
     expect(chat.get().watchedChildren).toEqual([])
+    expect(screen.queryByRole('alert')).toBeNull()
 
-    act(() => chat.applyFrame(childCreated()))
-    // The row follows its child as soon as it is told the child exists, with
-    // no close and reopen.
+    // The gateway only reports the run once the session exists; the row takes
+    // the watch again without being closed and reopened.
+    act(() => chat.applyFrame(runsFrame(child)))
     expect(chat.get().watchedChildren).toEqual([child])
     act(() => chat.applyFrame(childSnapshot([childCall])))
     expect(screen.getByRole('button', { name: /Read/ })).toHaveTextContent('/tmp/project/lexer.go')
+  })
+
+  it('names a refusal that is not a missing session, answer or not', async () => {
+    const chat = store()
+    render(
+      <Harness chat={chat} call={{ ...call, name: 'agent_dispatch' }} result={answer('Started subagent "audit".')} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /Agent/ }))
+    act(() => chat.applyFrame(childError('too_many_subscriptions', 'this connection holds the maximum')))
+    // The session exists; only this connection is full, so the row says so
+    // instead of waiting on a snapshot that will never come.
+    expect(screen.getByRole('alert')).toHaveTextContent('this connection holds the maximum')
+    expect(screen.queryByText('Loading the subagent…')).toBeNull()
+    expect(chat.get().watchedChildren).toEqual([child])
   })
 
   it('surfaces a gateway error about the child on the parent row', async () => {
@@ -306,7 +338,9 @@ describe('the agent view', () => {
     const header = screen.getByRole('button', { name: /Agent/ })
     act(() => chat.applyFrame(childCreated()))
     await userEvent.click(header)
-    act(() => chat.applyFrame(childError('unknown_session', 'no such session')))
+    // A session the gateway has but cannot read: the watch stays, so the
+    // retried read can still land.
+    act(() => chat.applyFrame(childError('snapshot_failed', 'the session could not be read')))
     expect(screen.getByRole('alert')).toBeInTheDocument()
 
     act(() => chat.applyFrame(childSnapshot([childCall])))

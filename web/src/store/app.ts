@@ -56,11 +56,17 @@ export interface AppState {
   // watchedChildren are the subagent sessions an open tool row follows.
   // They are subscribed after the live sessions and never get a row.
   watchedChildren: string[]
-  // knownChildren are the subagent sessions the gateway has announced. A
-  // watch sent before the child exists answers unknown_session and is never
-  // retried, so an open tool row subscribes only once its child is listed
-  // here, or once its own call has answered.
+  // knownChildren are the subagent sessions the tab has been told exist: a
+  // session frame for the child, a run the gateway reports, or a bootstrap
+  // that listed either. A watch sent before then answers unknown_session, so
+  // an open tool row waits for one of these; an answered call is the row's
+  // other reason to try, since a settled run may be gone from every list.
   knownChildren: string[]
+  // refusedChildren are the watched children the gateway answered
+  // unknown_session for. Their watch is dropped and their row stops trying
+  // until the child is announced, which is what a later frame can do: without
+  // this, a row that tried too early would never subscribe again.
+  refusedChildren: string[]
   // childStatuses is the run state of each watched child, taken from its own
   // snapshot and its own status frames. A subagent keeps working after its
   // parent's tool row has answered, so the parent's status cannot say whether
@@ -87,6 +93,10 @@ export const emptySessionData: SessionData = {
   snapshotSeq: 0,
   generation: 0,
 }
+
+// unknownSessionCode is the gateway's answer to a subscribe for a session it
+// does not have (internal/web/stream.go handleSubscribe).
+const unknownSessionCode = 'unknown_session'
 
 // noMessages is the one empty list, so an empty page keeps its identity.
 const noMessages: WireMessage[] = []
@@ -120,6 +130,7 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     generation: 0,
     watchedChildren: [],
     knownChildren: [],
+    refusedChildren: [],
     childStatuses: {},
     lastSeen: readSeen(storage),
     error: null,
@@ -151,8 +162,10 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       const before = store.get().lastSeen
       store.set((state) => ({
         selectedSessionId: sessionID,
-        // The open rows of the previous session are gone with it.
+        // The open rows of the previous session are gone with it, and so are
+        // the refusals their rows were waiting on.
         watchedChildren: [],
+        refusedChildren: [],
         lastSeen: markSeen(state.lastSeen, sessionID, updatedAtOf(state, sessionID)),
         error: errorForSelection(state.error, sessionID),
       }))
@@ -275,20 +288,17 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
   // children are gone: what the tab already knew stays known, or a watch
   // that outlives a reconnect would never be taken again. The runs it reports
   // are the ones a reload mid-run has to learn its subagents from.
-  let knownChildren = state.knownChildren
-  for (const row of payload.sessions) {
-    if (isChildSession(row)) {
-      knownChildren = rememberChild(knownChildren, row.id, state.watchedChildren)
-    }
-  }
-  knownChildren = rememberRuns(knownChildren, payload.agent_runs, state.watchedChildren)
+  const known = knownPatch(state, [
+    ...payload.sessions.filter(isChildSession).map((row) => row.id),
+    ...childRuns(payload.agent_runs),
+  ])
   return {
     ...state,
     bootstrap: payload,
     sessions: rows,
     selectedSessionId,
     generation,
-    knownChildren,
+    ...(known ?? {}),
     sessionData: resetPages(state.sessionData, generation),
     // The session a bootstrap opens was on screen before it was selected, so
     // it starts seen instead of unread. Without this, switching away from it
@@ -385,8 +395,8 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         if (event.type === 'deleted') {
           return dropSession(state, id)
         }
-        const knownChildren = rememberChild(state.knownChildren, id, state.watchedChildren)
-        return knownChildren === state.knownChildren ? state : { ...state, knownChildren }
+        const patch = knownPatch(state, [id])
+        return patch === null ? state : { ...state, ...patch }
       }
       // A session deleted in another tab leaves this one the same way a
       // local delete does: row, messages, selection and seen mark all go.
@@ -448,12 +458,30 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
     }
     case 'agent_runs': {
       // The run registry names the session of every subagent that started.
-      const runs = frame.payload as AgentRun[]
-      const knownChildren = rememberRuns(state.knownChildren, runs, state.watchedChildren)
-      return knownChildren === state.knownChildren ? state : { ...state, knownChildren }
+      const patch = knownPatch(state, childRuns(frame.payload as AgentRun[]))
+      return patch === null ? state : { ...state, ...patch }
     }
     case 'web_error': {
-      return { ...state, error: frame.payload as WebError }
+      const error = frame.payload as WebError
+      if (error.code !== unknownSessionCode || !state.watchedChildren.includes(error.session_id)) {
+        return { ...state, error }
+      }
+      // The gateway does not have the child's session (yet). The watch has to
+      // go, or the later frame that announces the child could never take it
+      // again: watchChild ignores an id it already holds. The child is not
+      // known either — the watch that marked it was a guess — and the refusal
+      // stops its row from trying until a frame really announces it.
+      const sessionData = { ...state.sessionData }
+      delete sessionData[error.session_id]
+      return {
+        ...state,
+        error,
+        sessionData,
+        watchedChildren: state.watchedChildren.filter((id) => id !== error.session_id),
+        knownChildren: withoutId(state.knownChildren, error.session_id),
+        refusedChildren: rememberId(state.refusedChildren, error.session_id),
+        childStatuses: withoutStatus(state.childStatuses, error.session_id),
+      }
     }
     case 'gateway_closing': {
       // The gateway is shutting down on purpose. The client keeps retrying
@@ -593,6 +621,7 @@ function dropSession(state: AppState, sessionID: string): AppState {
     knownChildren: state.knownChildren.includes(sessionID)
       ? state.knownChildren.filter((id) => id !== sessionID)
       : state.knownChildren,
+    refusedChildren: withoutId(state.refusedChildren, sessionID),
     childStatuses: withoutStatus(state.childStatuses, sessionID),
     selectedSessionId,
     lastSeen: withoutKey(state.lastSeen, sessionID),
@@ -601,8 +630,10 @@ function dropSession(state: AppState, sessionID: string): AppState {
 }
 
 // maxKnownChildren bounds the subagent sessions the tab remembers. The list
-// is only a hint that a child exists, so dropping the oldest costs one row
-// its early watch, and only for a call old enough that its row has closed.
+// only says which children exist, so forgetting the oldest costs one row its
+// early watch, and only for a call old enough that its row has closed. An id
+// an open row is watching is never forgotten: being known is what keeps that
+// row's watch from being dropped.
 export const maxKnownChildren = 256
 
 // rememberChild adds a child session id, keeping the input when it was
@@ -641,15 +672,36 @@ function isChildRun(run: AgentRun): boolean {
   return run.kind === 'subagent' || run.parent_session_id !== ''
 }
 
-// rememberRuns adds every child session the run list names.
-function rememberRuns(known: string[], runs: readonly AgentRun[], watched: readonly string[]): string[] {
-  let next = known
-  for (const run of runs) {
-    if (isChildRun(run)) {
-      next = rememberChild(next, run.session_id, watched)
-    }
+// childRuns answers the sessions of the subagent runs a run list names.
+function childRuns(runs: readonly AgentRun[]): string[] {
+  return runs.filter(isChildRun).map((run) => run.session_id)
+}
+
+// knownPatch records the children the gateway has just named, and lifts the
+// refusal of each: a row that gave up on a child tries again once the child
+// is announced. It answers null when nothing changed.
+function knownPatch(state: AppState, ids: Iterable<string>): Partial<AppState> | null {
+  let knownChildren = state.knownChildren
+  let refusedChildren = state.refusedChildren
+  for (const id of ids) {
+    knownChildren = rememberChild(knownChildren, id, state.watchedChildren)
+    refusedChildren = withoutId(refusedChildren, id)
   }
-  return next
+  if (knownChildren === state.knownChildren && refusedChildren === state.refusedChildren) {
+    return null
+  }
+  return { knownChildren, refusedChildren }
+}
+
+// rememberId adds an id to a list, keeping the input when it was already
+// there so a repeated refusal changes nothing.
+function rememberId(ids: string[], id: string): string[] {
+  return ids.includes(id) ? ids : [...ids, id]
+}
+
+// withoutId drops one id, keeping the input when it was absent.
+function withoutId(ids: string[], id: string): string[] {
+  return ids.includes(id) ? ids.filter((entry) => entry !== id) : ids
 }
 
 // withoutStatus drops one child's run state, keeping the input when it was
