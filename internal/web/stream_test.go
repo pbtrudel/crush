@@ -164,6 +164,48 @@ func TestEncodeStripsAttachmentData(t *testing.T) {
 	require.Contains(t, string(p.Payload), `"Data"`)
 }
 
+// frames returns the ring oldest first. Only tests read it; the stream never
+// replays from the ring as a whole, it computes one offset from attach.
+func (h *hub) frames() []frame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.orderedLocked()
+}
+
+// TestRingKeepsAStubForSessionFrames pins what the replay ring holds for a
+// per-session frame: its sequence, type and session, never its payload. A
+// per-session frame is never replayed, so keeping the payload would only cost
+// memory for the life of the ring, while a live subscriber still needs all of
+// it.
+func TestRingKeepsAStubForSessionFrames(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	c, _, _, _ := h.attach(-1)
+	require.True(t, h.beginSubscription(c, "s1"))
+	h.flushSubscription(c, "s1", frame{Type: frameSessionSnapshot, Payload: json.RawMessage(`{}`)})
+	readConnFrame(t, c) // The snapshot.
+
+	big := json.RawMessage(`{"id":"m1","text":"` + strings.Repeat("x", 64<<10) + `"}`)
+	h.publishSession("s1", "message", big)
+	h.publish("agent_runs", json.RawMessage(`[]`))
+
+	ring := h.frames()
+	last := ring[len(ring)-1]
+	require.Equal(t, "agent_runs", last.Type)
+	session := ring[len(ring)-2]
+	require.Equal(t, "message", session.Type)
+	require.Equal(t, "s1", session.Session)
+	require.Empty(t, session.Payload, "a per-session frame keeps no payload in the ring")
+	for i := 1; i < len(ring); i++ {
+		require.Equal(t, ring[i-1].Seq+1, ring[i].Seq, "the ring stays contiguous in seq")
+	}
+
+	live := readConnFrame(t, c)
+	require.Equal(t, "message", live.Type)
+	require.Equal(t, "s1", live.Session, "a live frame keeps its session")
+	require.Equal(t, big, live.Payload, "a live subscriber gets the full payload")
+}
+
 func TestRingIsBounded(t *testing.T) {
 	t.Parallel()
 	h := newHub()

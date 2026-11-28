@@ -123,15 +123,19 @@ func (h *hub) appendLocked(f frame) {
 	h.start = (h.start + 1) % ringSize
 }
 
-// publishSession tags a frame with its session, records it in the ring and
-// delivers it to every connection that tracks the session, which includes one
-// whose snapshot is still being built.
+// publishSession tags a frame with its session, records its stub in the ring
+// and delivers the full frame to every connection that tracks the session,
+// which includes one whose snapshot is still being built.
 func (h *hub) publishSession(sessionID, typ string, raw json.RawMessage) frame {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.seq++
 	f := frame{Seq: h.seq, Type: typ, Session: sessionID, Payload: raw}
-	h.appendLocked(f)
+	// The ring keeps a stub, not the frame: a per-session frame is never
+	// replayed, so its payload would only cost memory for as long as it
+	// sits in the ring. The sequence still has to advance, because attach
+	// computes its replay offset from the seqs the ring holds.
+	h.appendLocked(frame{Seq: f.Seq, Type: f.Type, Session: f.Session})
 	for c := range h.subs {
 		if !c.tracks(sessionID) {
 			continue
@@ -249,13 +253,6 @@ func (h *hub) unsubscribe(c *conn, sessionID string) {
 	defer h.mu.Unlock()
 	delete(c.sessions, sessionID)
 	delete(c.pending, sessionID)
-}
-
-// frames returns the ring oldest first. The caller holds no lock.
-func (h *hub) frames() []frame {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.orderedLocked()
 }
 
 func (h *hub) orderedLocked() []frame {
