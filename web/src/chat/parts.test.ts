@@ -56,6 +56,16 @@ describe('messageParts', () => {
       mimeType: 'image',
     })
   })
+
+  // A pasted image arrives as a data: URL, which has no file name: baseName
+  // would answer the base64 payload itself.
+  it('names a data URL image by the type alone', () => {
+    expect(parsePart('image_url', { url: 'data:image/png;base64,iVBORw0KGgo=' })).toEqual({
+      kind: 'attachment',
+      name: 'image',
+      mimeType: 'image',
+    })
+  })
 })
 
 describe('finishOf', () => {

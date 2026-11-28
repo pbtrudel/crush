@@ -191,7 +191,7 @@ export function parsePart(type: string, data: unknown): MessagePart | null {
       if (!parsed.success) {
         return null
       }
-      return { kind: 'attachment', name: baseName(parsed.data.url) || 'image', mimeType: 'image' }
+      return { kind: 'attachment', name: imageName(parsed.data.url), mimeType: 'image' }
     }
     default: {
       return null
@@ -202,6 +202,16 @@ export function parsePart(type: string, data: unknown): MessagePart | null {
 function baseName(path: string): string {
   const trimmed = path.replace(/[?#].*$/, '')
   return trimmed.slice(trimmed.lastIndexOf('/') + 1)
+}
+
+// imageName is the file name of an image URL. A pasted image arrives as a
+// data: URL, which has no name to take: baseName would answer its base64
+// payload, so the type alone names it.
+function imageName(url: string): string {
+  if (url.startsWith('data:')) {
+    return 'image'
+  }
+  return baseName(url) || 'image'
 }
 
 // cache keeps one parsed array per message object. A streamed token makes a
@@ -271,8 +281,10 @@ export function resultSignature(messages: WireMessage[]): string {
   return keys.join(',')
 }
 
-// digest is FNV-1a over the string's UTF-16 code units, in base 36: 32 bits
-// of it, wide enough that two texts of one log never collide.
+// digest is FNV-1a over the string's UTF-16 code units, in base 36. A
+// 32-bit collision between two texts of one log is unlikely rather than
+// impossible, and all it would do is keep a stale memo key until the next
+// result changes.
 function digest(text: string): string {
   let hash = 0x811c9dc5
   for (let index = 0; index < text.length; index += 1) {

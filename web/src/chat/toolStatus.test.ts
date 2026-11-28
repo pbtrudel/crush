@@ -24,6 +24,20 @@ describe('toolStatus', () => {
     expect(toolStatus(result({ metadata: '{"interrupted":true}' }), null, false)).toBe('interrupted')
   })
 
+  // settleTurn marks a call its turn never answered with is_error and the
+  // agent's interrupted kind in the metadata, and its content is the
+  // turn-end sentence, not the older prefix (internal/agent/settle.go,
+  // internal/agent/tools/error_kind.go). The call was cut off, not failed.
+  it('reads the settled turn-end result as interrupted, not failed', () => {
+    const settled = result({
+      isError: true,
+      content: 'Error: user cancelled assistant tool calling',
+      metadata: '{"error_kind":"interrupted"}',
+    })
+    expect(toolStatus(settled, null, false)).toBe('interrupted')
+    expect(toolStatus(settled, null, true)).toBe('interrupted')
+  })
+
   it('runs only while its turn is live', () => {
     expect(toolStatus(undefined, null, true)).toBe('running')
     expect(toolStatus(undefined, finish('tool_use'), true)).toBe('running')
