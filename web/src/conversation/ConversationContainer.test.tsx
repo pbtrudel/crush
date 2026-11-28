@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api/http'
 import { HttpError } from '../api/http'
 import { bootstrapSchema, type ParsedFrame, type SessionRow as SessionRowData } from '../api/wire'
-import { createAppStore, type AppState, type SessionData, type WireMessage } from '../store/app'
+import { createAppStore, emptySessionData, type AppState, type SessionData, type WireMessage } from '../store/app'
 import { memoryStorage } from '../app/storage'
 import ConversationContainer from './ConversationContainer'
 
@@ -33,7 +33,7 @@ function message(id: string, value: string, role = 'assistant', sessionID = 's1'
 }
 
 function data(messages: WireMessage[], hasMore = false, snapshotSeq = 0): SessionData {
-  return { messages, hasMore, queued: [], files: [], snapshotSeq }
+  return { ...emptySessionData, messages, hasMore, snapshotSeq }
 }
 
 const bootstrap = bootstrapSchema.parse({
@@ -249,13 +249,20 @@ describe('ConversationContainer', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
     await screen.findByText('hello')
+    // The store keeps a session's pages in its entry, so what drops them is
+    // the app releasing the session it unsubscribes, not the selection
+    // itself: useGateway does both when the selection moves.
     act(() => {
       store.selectSession('s2')
+      store.releaseSession('s1')
     })
     expect(await screen.findByText('elsewhere')).toBeInTheDocument()
     expect(screen.queryByText('hello')).toBeNull()
     act(() => {
       store.selectSession('s1')
+      // The resubscribe answers a fresh snapshot, which is what puts the
+      // session's messages back without the page that was loaded.
+      store.applyFrame(snapshotFrame('s1', [message('m2', 'hi there')]))
     })
     expect(await screen.findByText('hi there')).toBeInTheDocument()
     expect(screen.queryByText('hello')).toBeNull()
@@ -281,6 +288,38 @@ describe('ConversationContainer', () => {
     })
     expect(screen.queryByText('hello')).toBeNull()
     expect(articles()).toEqual(['elsewhere'])
+  })
+
+  it('shows a live edit to a message from a loaded older page', async () => {
+    const page = { messages: [message('m0', 'first words')], has_more: false }
+    const { store } = setup(
+      { selectedSessionId: 's1', sessions: [row()], sessionData: { s1: data([message('m1', 'hello')], true) } },
+      async () => page,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
+    await screen.findByText('first words')
+    act(() =>
+      store.applyFrame({
+        seq: 9,
+        type: 'message',
+        sessionId: 's1',
+        payload: { type: 'updated', payload: message('m0', 'first words, edited') },
+      }),
+    )
+    expect(screen.getByText('first words, edited')).toBeInTheDocument()
+    expect(articles()).toHaveLength(2)
+  })
+
+  it('drops a page that answers after a resync, before the new snapshot', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    const { store } = setup(
+      { selectedSessionId: 's1', sessions: [row()], sessionData: { s1: data([message('m1', 'hello')], true) } },
+      () => new Promise((resolve) => (answer = resolve)),
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
+    act(() => store.applyBootstrap(bootstrap))
+    await act(async () => answer({ messages: [message('m0', 'stale page')], has_more: false }))
+    expect(screen.queryByText('stale page')).toBeNull()
   })
 
   it('renders the pane for a session the list does not carry yet', () => {

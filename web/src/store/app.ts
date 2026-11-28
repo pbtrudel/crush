@@ -19,14 +19,23 @@ export type { WireMessage }
 
 export interface SessionData {
   messages: WireMessage[]
+  // older holds the pages read before the snapshot, oldest first. Live
+  // edits and deletes reach them the same way they reach messages.
+  older: WireMessage[]
+  // hasMore says whether history exists before the oldest message held,
+  // whichever list it is in.
   hasMore: boolean
+  loadingOlder: boolean
+  olderError: string | null
   queued: string[]
   files: { path: string }[]
   // snapshotSeq counts the snapshots the tab has applied for the session.
-  // A snapshot replaces the messages, so history paged in against an older
-  // one belongs to a list that is gone; the conversation reads this to drop
-  // it.
   snapshotSeq: number
+  // generation moves on every snapshot for the session and on every
+  // bootstrap. An older page is applied only under the generation its
+  // request started in, so a page that answers across a resync, before
+  // the new snapshot lands, is dropped instead of joining the new list.
+  generation: number
 }
 
 export interface AppState {
@@ -35,6 +44,9 @@ export interface AppState {
   sessions: SessionRow[]
   selectedSessionId: string | null
   sessionData: Record<string, SessionData>
+  // watchedChildren are the subagent sessions an open tool row follows.
+  // They are subscribed after the live sessions and never get a row.
+  watchedChildren: string[]
   lastSeen: Record<string, number>
   // error is the last web_error frame the gateway sent. The frame is global,
   // so session_id names the session it concerns and an empty one concerns
@@ -47,10 +59,36 @@ export interface AppState {
 
 export const emptySessionData: SessionData = {
   messages: [],
+  older: [],
   hasMore: false,
+  loadingOlder: false,
+  olderError: null,
   queued: [],
   files: [],
   snapshotSeq: 0,
+  generation: 0,
+}
+
+// noMessages is the one empty list, so an empty page keeps its identity.
+const noMessages: WireMessage[] = []
+
+export interface OlderPageTicket {
+  sessionId: string
+  generation: number
+  before: string | null
+}
+
+// MessagesPage is what GET /api/sessions/{sid}/messages answers.
+export interface MessagesPage {
+  messages: WireMessage[]
+  has_more: boolean
+}
+
+// isChildSession reports a subagent's session: the workspace lists only
+// top-level sessions, and a child that slips in through a frame must not
+// become a sidebar row.
+export function isChildSession(row: { parent_session_id?: string }): boolean {
+  return (row.parent_session_id ?? '') !== ''
 }
 
 export function createAppStore(storage: Storage = localStorage): Store<AppState> & AppStore {
@@ -60,6 +98,7 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     sessions: [],
     selectedSessionId: null,
     sessionData: {},
+    watchedChildren: [],
     lastSeen: readSeen(storage),
     error: null,
     gatewayClosing: false,
@@ -90,6 +129,8 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       const before = store.get().lastSeen
       store.set((state) => ({
         selectedSessionId: sessionID,
+        // The open rows of the previous session are gone with it.
+        watchedChildren: [],
         lastSeen: markSeen(state.lastSeen, sessionID, updatedAtOf(state, sessionID)),
         error: errorForSelection(state.error, sessionID),
       }))
@@ -118,6 +159,45 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       store.set((state) => dropSession(state, sessionID))
       persistSeen(before)
     },
+    beginOlderPage: (sessionID: string): OlderPageTicket | null => {
+      const data = store.get().sessionData[sessionID]
+      if (data === undefined || data.loadingOlder) {
+        return null
+      }
+      const oldest = data.older[0] ?? data.messages[0]
+      const ticket = { sessionId: sessionID, generation: data.generation, before: oldest?.id ?? null }
+      store.set((state) => patchSession(state, sessionID, { loadingOlder: true, olderError: null }))
+      return ticket
+    },
+    applyOlderPage: (ticket: OlderPageTicket, page: MessagesPage) => {
+      store.set((state) => reduceOlderPage(state, ticket, page))
+    },
+    failOlderPage: (ticket: OlderPageTicket, error: string) => {
+      store.set((state) => {
+        const data = state.sessionData[ticket.sessionId]
+        if (data === undefined || data.generation !== ticket.generation) {
+          return {}
+        }
+        return patchSession(state, ticket.sessionId, { loadingOlder: false, olderError: error })
+      })
+    },
+    watchChild: (sessionID: string) => {
+      store.set((state) =>
+        state.watchedChildren.includes(sessionID) ? {} : { watchedChildren: [...state.watchedChildren, sessionID] },
+      )
+    },
+    // unwatchChild also drops the child's messages: nobody draws them, and
+    // the next watch subscribes afresh and gets a new snapshot.
+    unwatchChild: (sessionID: string) => {
+      store.set((state) => {
+        if (!state.watchedChildren.includes(sessionID)) {
+          return {}
+        }
+        const sessionData = { ...state.sessionData }
+        delete sessionData[sessionID]
+        return { watchedChildren: state.watchedChildren.filter((id) => id !== sessionID), sessionData }
+      })
+    },
   })
 }
 
@@ -129,29 +209,37 @@ export interface AppStore {
   releaseSession(sessionID: string): void
   forgetSession(sessionID: string): void
   dismissError(): void
+  beginOlderPage(sessionID: string): OlderPageTicket | null
+  applyOlderPage(ticket: OlderPageTicket, page: MessagesPage): void
+  failOlderPage(ticket: OlderPageTicket, error: string): void
+  watchChild(sessionID: string): void
+  unwatchChild(sessionID: string): void
 }
 
 export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
+  // A subagent's session is never a row: the workspace lists only the
+  // top-level sessions the person can open.
+  const rows = payload.sessions.filter((row) => !isChildSession(row))
   // A selection the gateway no longer lists is gone: keeping it would leave
   // the tab pointed at a session that cannot be subscribed to or rendered.
   const current = state.selectedSessionId
-  const stillListed = current !== null && payload.sessions.some((row) => row.id === current)
+  const stillListed = current !== null && rows.some((row) => row.id === current)
   // || and not ??: current_session_id is "" when no terminal is attached,
   // and an empty string must fall through to the first row.
-  const selectedSessionId = stillListed ? current : payload.current_session_id || payload.sessions[0]?.id || null
+  const selectedSessionId = stillListed ? current : payload.current_session_id || rows[0]?.id || null
   // An empty list means ListSessions failed, not that every session vanished:
   // pruning then would throw away every seen mark the person has.
-  const pruned = payload.sessions.length === 0 ? state.lastSeen : pruneSeen(state.lastSeen, payload.sessions)
+  const pruned = rows.length === 0 ? state.lastSeen : pruneSeen(state.lastSeen, rows)
   return {
     ...state,
     bootstrap: payload,
-    sessions: payload.sessions,
+    sessions: rows,
     selectedSessionId,
+    sessionData: resetPages(state.sessionData),
     // The session a bootstrap opens was on screen before it was selected, so
     // it starts seen instead of unread. Without this, switching away from it
     // would show a marker for a session the person has been reading.
-    lastSeen:
-      selectedSessionId === null ? pruned : markSeen(pruned, selectedSessionId, updatedAtIn(payload.sessions, selectedSessionId)),
+    lastSeen: selectedSessionId === null ? pruned : markSeen(pruned, selectedSessionId, updatedAtIn(rows, selectedSessionId)),
     // A bootstrap is a live gateway: the error from the old connection and
     // the closing mark it left behind are both stale now.
     error: null,
@@ -164,17 +252,23 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
     case 'session_snapshot': {
       const snapshot = frame.payload as SessionSnapshot
       const id = snapshot.session_id
+      const entity = snapshot.session
       let sessions = state.sessions
-      if (!hasSession(state, id)) {
+      if (entity !== undefined && isChildSession(entity)) {
+        // A subagent's session opens only for the tool row that asked.
+        if (!state.watchedChildren.includes(id)) {
+          return state
+        }
+      } else if (!hasSession(state, id)) {
         // A subscribe snapshot can beat the session created frame. When it
         // carries a non-empty entity the row comes from it; without one this
         // is a snapshot the tab cannot place and so must not keep.
-        const entity = snapshot.session
         if (entity === undefined || entity.id === '') {
           return state
         }
         sessions = mergeSessionEvent(state.sessions, { type: 'created', payload: { ...entity, id } })
       }
+      const previous = state.sessionData[id]
       return {
         ...state,
         sessions,
@@ -182,10 +276,14 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
           ...state.sessionData,
           [id]: {
             messages: snapshot.messages,
+            older: noMessages,
             hasMore: snapshot.has_more,
+            loadingOlder: false,
+            olderError: null,
             queued: snapshot.queued,
             files: snapshot.files,
-            snapshotSeq: (state.sessionData[id]?.snapshotSeq ?? 0) + 1,
+            snapshotSeq: (previous?.snapshotSeq ?? 0) + 1,
+            generation: (previous?.generation ?? 0) + 1,
           },
         },
       }
@@ -205,6 +303,11 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       const event = frame.payload as SessionEvent
       const id = typeof event.payload.id === 'string' ? event.payload.id : ''
       if (id === '') {
+        return state
+      }
+      // A subagent's session is never a row: its created and updated frames
+      // are dropped, and a deleted one only clears what the tab held.
+      if (event.type !== 'deleted' && isChildSession(event.payload)) {
         return state
       }
       // A session deleted in another tab leaves this one the same way a
@@ -232,14 +335,38 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       if (current === undefined) {
         return state
       }
-      const messages =
-        envelope.type === 'deleted'
-          ? current.messages.filter((message) => message.id !== envelope.payload.id)
-          : upsertMessage(current.messages, envelope.payload)
+      const next = envelope.payload
+      if (envelope.type === 'deleted') {
+        return {
+          ...state,
+          sessionData: {
+            ...state.sessionData,
+            [id]: {
+              ...current,
+              messages: current.messages.filter((entry) => entry.id !== next.id),
+              older: current.older.filter((entry) => entry.id !== next.id),
+            },
+          },
+        }
+      }
+      // An edit to a message that lives in a loaded older page is written
+      // there; anything else is upserted into the live list.
+      const olderIndex = current.older.findIndex((entry) => entry.id === next.id)
+      if (olderIndex >= 0) {
+        const older = current.older.slice()
+        older[olderIndex] = next
+        return { ...state, sessionData: { ...state.sessionData, [id]: { ...current, older } } }
+      }
       return {
         ...state,
-        sessionData: { ...state.sessionData, [id]: { ...current, messages } },
+        sessionData: { ...state.sessionData, [id]: { ...current, messages: upsertMessage(current.messages, next) } },
       }
+    }
+    case 'model_changed': {
+      if (state.bootstrap === null) {
+        return state
+      }
+      return { ...state, bootstrap: { ...state.bootstrap, model: frame.payload as Bootstrap['model'] } }
     }
     case 'web_error': {
       return { ...state, error: frame.payload as WebError }
@@ -267,6 +394,75 @@ function upsertMessage(messages: WireMessage[], next: WireMessage): WireMessage[
   const copy = messages.slice()
   copy[index] = next
   return copy
+}
+
+function patchSession(state: AppState, sessionID: string, patch: Partial<SessionData>): Partial<AppState> {
+  const data = state.sessionData[sessionID]
+  if (data === undefined) {
+    return {}
+  }
+  return { sessionData: { ...state.sessionData, [sessionID]: { ...data, ...patch } } }
+}
+
+// reduceOlderPage puts an older page in front of what is loaded, unless the
+// session's generation moved while the request was out.
+export function reduceOlderPage(state: AppState, ticket: OlderPageTicket, page: MessagesPage): AppState {
+  const data = state.sessionData[ticket.sessionId]
+  if (data === undefined || data.generation !== ticket.generation) {
+    return state
+  }
+  const held = new Set([...data.older, ...data.messages].map((entry) => entry.id))
+  const fresh = page.messages.filter((entry) => !held.has(entry.id))
+  return {
+    ...state,
+    sessionData: {
+      ...state.sessionData,
+      [ticket.sessionId]: {
+        ...data,
+        older: fresh.length === 0 ? data.older : [...fresh, ...data.older],
+        hasMore: page.has_more,
+        loadingOlder: false,
+        olderError: null,
+      },
+    },
+  }
+}
+
+// visibleMessages is the log a conversation shows: the loaded pages, then
+// the snapshot and its live updates, each id once. A resync can echo a
+// message the tab already paged in; the first copy wins.
+export function visibleMessages(older: WireMessage[], messages: WireMessage[]): WireMessage[] {
+  if (older.length === 0) {
+    return messages
+  }
+  const seen = new Set<string>()
+  const out: WireMessage[] = []
+  for (const entry of [...older, ...messages]) {
+    if (!seen.has(entry.id)) {
+      seen.add(entry.id)
+      out.push(entry)
+    }
+  }
+  return out
+}
+
+// resetPages drops every loaded older page and moves every generation, for
+// a bootstrap: whatever was read under the old connection belongs to a
+// list the new snapshots replace. Dropping a page means history exists
+// before the snapshot, so has_more turns true.
+function resetPages(sessionData: Record<string, SessionData>): Record<string, SessionData> {
+  const out: Record<string, SessionData> = {}
+  for (const [id, data] of Object.entries(sessionData)) {
+    out[id] = {
+      ...data,
+      older: noMessages,
+      hasMore: data.older.length > 0 ? true : data.hasMore,
+      loadingOlder: false,
+      olderError: null,
+      generation: data.generation + 1,
+    }
+  }
+  return out
 }
 
 function mergeSessionEvent(rows: SessionRow[], event: SessionEvent): SessionRow[] {
@@ -434,6 +630,9 @@ export function wantedSubscriptions(state: AppState): string[] {
     if (row.status !== 'idle') {
       wanted.add(row.id)
     }
+  }
+  for (const sessionID of state.watchedChildren) {
+    wanted.add(sessionID)
   }
   return [...wanted].slice(0, maxSubscriptions)
 }

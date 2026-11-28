@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Bootstrap, ParsedFrame } from '../api/wire'
+import { bootstrapSchema, type Bootstrap, type ParsedFrame } from '../api/wire'
 import { memoryStorage } from '../app/storage'
 import {
   connectionNotice,
   createAppStore,
+  emptySessionData,
   isUnread,
   isUnreadRow,
   maxSubscriptions,
   reduceBootstrap,
   reduceFrame,
+  reduceOlderPage,
   visibleError,
+  visibleMessages,
   wantedSubscriptions,
   type AppState,
+  type OlderPageTicket,
   type WireMessage,
 } from './app'
 
@@ -122,7 +126,7 @@ describe('reduceFrame', () => {
     const withCopies = {
       ...start,
       sessionData: {
-        s1: { messages: [copy, copy], hasMore: false, queued: [], files: [], snapshotSeq: 0 },
+        s1: { ...emptySessionData, messages: [copy, copy] },
       },
     }
     const next = reduceFrame(
@@ -691,5 +695,224 @@ describe('web_error frames', () => {
     })
     expect(store.get().selectedSessionId).toBe('s2')
     expect(store.get().error).toBeNull()
+  })
+})
+
+// The paging tests below build their world from these helpers: one page of
+// history, its live frames and a bootstrap that lists the sessions.
+function msg(id: string, text: string, sessionID = 's1'): WireMessage {
+  return {
+    id,
+    role: 'assistant',
+    session_id: sessionID,
+    parts: [{ type: 'text', data: { text } }],
+    created_at: 1,
+    updated_at: 1,
+  }
+}
+
+function snapshot(sessionID: string, messages: WireMessage[], parent = ''): ParsedFrame {
+  return {
+    seq: 1,
+    type: 'session_snapshot',
+    sessionId: sessionID,
+    payload: {
+      session_id: sessionID,
+      session: { id: sessionID, parent_session_id: parent, title: 'x', message_count: messages.length, updated_at: 1 },
+      messages,
+      has_more: true,
+      busy: false,
+      queued: [],
+      files: [],
+    },
+  }
+}
+
+// messageEventFrame is one created, updated or deleted message carrying the
+// message itself. The older helper above names a message by id instead.
+function messageEventFrame(type: 'created' | 'updated' | 'deleted', next: WireMessage): ParsedFrame {
+  return { seq: 2, type: 'message', sessionId: next.session_id, payload: { type, payload: next } }
+}
+
+function bootstrapPayload(sessions: Bootstrap['sessions']): Bootstrap {
+  return bootstrapSchema.parse({
+    version: 't',
+    working_dir: '/w',
+    current_session_id: 's1',
+    sessions,
+    model: { id: 'm', name: 'M', provider: 'p', context_window: 1000, agent_ready: true },
+    agent_ready: true,
+    permission_mode: 'ask',
+    input_mode: 'code',
+    lsp: {},
+    mcp: {},
+    agent_runs: [],
+  })
+}
+
+const top = { id: 's1', parent_session_id: '', title: 'Top', message_count: 1, updated_at: 5, status: 'idle' as const }
+const child = {
+  id: 'a1$$tc-1',
+  parent_session_id: 's1',
+  title: 'Sub',
+  message_count: 1,
+  updated_at: 6,
+  status: 'idle' as const,
+}
+
+describe('older pages', () => {
+  function loaded() {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    store.applyOlderPage(ticket, { messages: [msg('m3', 'three'), msg('m4', 'four')], has_more: true })
+    return store
+  }
+
+  it('asks for the page before the oldest message, once at a time', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1')
+    expect(ticket).toMatchObject({ sessionId: 's1', before: 'm5' })
+    expect(store.beginOlderPage('s1')).toBeNull()
+    expect(store.get().sessionData.s1.loadingOlder).toBe(true)
+  })
+
+  it('pages back from the oldest message already loaded', () => {
+    const store = loaded()
+    expect(store.beginOlderPage('s1')?.before).toBe('m3')
+  })
+
+  it('applies a live edit to a message in a loaded older page', () => {
+    const store = loaded()
+    store.applyFrame(messageEventFrame('updated', msg('m3', 'three, edited')))
+    const data = store.get().sessionData.s1
+    expect(data.older.map((entry) => entry.parts[0].data)).toEqual([{ text: 'three, edited' }, { text: 'four' }])
+    expect(data.messages.map((entry) => entry.id)).toEqual(['m5'])
+  })
+
+  it('applies a live delete to a message in a loaded older page', () => {
+    const store = loaded()
+    store.applyFrame(messageEventFrame('deleted', msg('m4', 'four')))
+    expect(store.get().sessionData.s1.older.map((entry) => entry.id)).toEqual(['m3'])
+  })
+
+  it('drops a page that answers after a resync: the generation moved', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    // The resync replaces the bootstrap before the page answers, and the
+    // new snapshot has not landed yet.
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyOlderPage(ticket, { messages: [msg('m4', 'stale')], has_more: false })
+    const data = store.get().sessionData.s1
+    expect(data.older).toEqual([])
+    expect(data.loadingOlder).toBe(false)
+  })
+
+  it('drops a page that answers after a new snapshot', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    expect(reduceOlderPage(store.get(), ticket, { messages: [msg('m4', 'stale')], has_more: false })).toBe(store.get())
+  })
+
+  it('keeps has_more true when a resync drops loaded pages', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    // The page says the history starts there, so the control goes.
+    store.applyOlderPage(ticket, { messages: [msg('m3', 'three')], has_more: false })
+    expect(store.get().sessionData.s1.hasMore).toBe(false)
+    // The resync drops the page, but history still exists before the
+    // snapshot: dropping the page is what turns has_more back on.
+    store.applyBootstrap(bootstrapPayload([top]))
+    expect(store.get().sessionData.s1.older).toEqual([])
+    expect(store.get().sessionData.s1.hasMore).toBe(true)
+  })
+
+  it('records the reason a page failed', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    store.failOlderPage(ticket, 'no such session')
+    expect(store.get().sessionData.s1).toMatchObject({ loadingOlder: false, olderError: 'no such session' })
+  })
+})
+
+describe('visibleMessages', () => {
+  it('shows each id once, oldest first, the loaded page winning', () => {
+    const out = visibleMessages([msg('m1', 'one'), msg('m2', 'two')], [msg('m2', 'echo'), msg('m3', 'three')])
+    expect(out.map((entry) => entry.id)).toEqual(['m1', 'm2', 'm3'])
+    expect(out[1].parts[0].data).toEqual({ text: 'two' })
+  })
+})
+
+describe('subagent sessions', () => {
+  it('keeps a child session out of the rows the bootstrap lists', () => {
+    const state = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrapPayload([top, child]))
+    expect(state.sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('ignores a session frame for a child session', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame({ seq: 3, type: 'session', payload: { type: 'created', payload: child } })
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('opens a watched child from its snapshot without adding a row', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().sessionData[child.id].messages.map((entry) => entry.id)).toEqual(['c1'])
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('drops the snapshot of a child nobody watches', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().sessionData[child.id]).toBeUndefined()
+  })
+
+  it('subscribes a watched child after the live sessions, and forgets it on unwatch', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    expect(wantedSubscriptions(store.get())).toEqual(['s1', child.id])
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    store.unwatchChild(child.id)
+    expect(wantedSubscriptions(store.get())).toEqual(['s1'])
+    expect(store.get().sessionData[child.id]).toBeUndefined()
+  })
+
+  it('stops watching children when the selection changes', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top, { ...top, id: 's2', title: 'Other' }]))
+    store.watchChild(child.id)
+    store.selectSession('s2')
+    expect(store.get().watchedChildren).toEqual([])
+  })
+})
+
+describe('model_changed frames', () => {
+  it('replace the bootstrap model the usage footer reads', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame({
+      seq: 4,
+      type: 'model_changed',
+      payload: { id: 'm2', name: 'Bigger', provider: 'p', context_window: 400000, agent_ready: true },
+    })
+    expect(store.get().bootstrap?.model.context_window).toBe(400000)
   })
 })
