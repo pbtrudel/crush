@@ -112,14 +112,22 @@ function highlighter(): Promise<HighlighterCore> {
   return core
 }
 
-// ensure loads a grammar once. A grammar that fails to load stays failed:
-// its blocks render plain, and the tab does not retry on every token.
+// ensure loads a grammar once. A grammar that loaded stays cached, so a
+// token pays one lookup. One that failed is dropped from the map: a refused
+// chunk may load on the next attempt, and keeping the rejected promise would
+// leave every later block in that language plain for the life of the tab.
 async function ensure(lang: LanguageId): Promise<HighlighterCore> {
   const instance = await highlighter()
   let pending = loading.get(lang)
   if (pending === undefined) {
-    pending = grammars[lang]().then((module) => instance.loadLanguage(module.default))
-    loading.set(lang, pending)
+    const load = grammars[lang]().then((module) => instance.loadLanguage(module.default))
+    loading.set(lang, load)
+    void load.catch(() => {
+      if (loading.get(lang) === load) {
+        loading.delete(lang)
+      }
+    })
+    pending = load
   }
   await pending
   return instance

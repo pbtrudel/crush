@@ -24,4 +24,21 @@ describe('highlighter', () => {
     await expect(tokenize('{}', 'json')).resolves.toEqual([])
     expect(shiki.createHighlighterCore).toHaveBeenCalledTimes(2)
   })
+
+  // A grammar that failed to load is not a grammar that cannot load: the
+  // chunk may have been refused by a flaky connection. Keeping the rejected
+  // promise in the loading map would leave every later block in that language
+  // plain for the life of the tab.
+  it('loads a grammar again after it rejects', async () => {
+    vi.resetModules()
+    const loadLanguage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('grammar failed'))
+      .mockResolvedValue(undefined)
+    shiki.createHighlighterCore.mockResolvedValue({ loadLanguage, codeToTokensBase: () => [] })
+    const { tokenize: freshTokenize } = await import('./highlighter')
+    await expect(freshTokenize('{}', 'json')).rejects.toThrow('grammar failed')
+    await expect(freshTokenize('{}', 'json')).resolves.toEqual([])
+    expect(loadLanguage).toHaveBeenCalledTimes(2)
+  })
 })
