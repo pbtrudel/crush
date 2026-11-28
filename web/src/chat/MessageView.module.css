@@ -1,0 +1,142 @@
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: var(--dsw-radius-md);
+}
+
+.user {
+  align-self: flex-end;
+  max-width: 80%;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.assistant {
+  align-self: stretch;
+}
+
+.segment {
+  min-width: 0;
+}
+
+.streaming > .segment:last-of-type::after {
+  content: '▍';
+  margin-left: 2px;
+  color: var(--dsw-alias-label-secondary);
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming > .segment:last-of-type::after {
+    animation: none;
+  }
+}
+
+.userText {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reasoning {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.reasoningSummary {
+  display: flex;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.reasoningLabel {
+  flex: none;
+  font-weight: 600;
+}
+
+.reasoningPreview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reasoningBody {
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--dsw-alias-border-l2);
+  white-space: pre-wrap;
+}
+
+.notice {
+  padding: 6px 10px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  font-size: 12px;
+}
+
+.noticeError {
+  background: var(--dsw-static-red-400-a12);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.noticeDetails pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.shell {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  font-family: var(--ds-font-family-code);
+  font-size: var(--crush-font-size-code);
+  white-space: pre-wrap;
+}
+
+.report summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.note {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.attachment {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0.6;
+}
+
+.message:hover .actions,
+.actions:focus-within {
+  opacity: 1;
+}

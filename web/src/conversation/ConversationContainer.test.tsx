@@ -74,9 +74,17 @@ function setup(seed: Partial<AppState>, get: Get = async () => ({ messages: [], 
   return { store, client, view }
 }
 
-// articles is the log's message list in the order it renders.
+// articles is the log's message list in the order it renders. The copy
+// action belongs to the message's frame, not to the text it draws, so its
+// caption is taken out before the text is read.
 function articles(): string[] {
-  return screen.getAllByRole('article').map((element) => element.textContent ?? '')
+  return screen.getAllByRole('article').map((element) => {
+    const copy = element.cloneNode(true) as HTMLElement
+    for (const button of copy.querySelectorAll('button[aria-label="Copy message"]')) {
+      button.remove()
+    }
+    return copy.textContent ?? ''
+  })
 }
 
 describe('ConversationContainer', () => {

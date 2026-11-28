@@ -3,6 +3,7 @@ import { useCallback, useMemo } from 'react'
 import type { ApiClient } from '../api/http'
 import { visibleMessages, type AppState, type AppStore, type MessagesPage, type WireMessage } from '../store/app'
 import { useStore, type Store } from '../store/store'
+import { ToolEnvironmentProvider } from '../tools/environment'
 import Conversation from './Conversation'
 
 export interface ConversationContainerProps {
@@ -70,16 +71,26 @@ function SessionConversation({ sessionId, title, client, store }: SessionConvers
       .catch((cause: unknown) => store.failOlderPage(ticket, errorText(cause)))
   }, [client, sessionId, store])
 
+  const status = useStore(store, (state) => state.sessions.find((row) => row.id === sessionId)?.status)
+  // The bootstrap's MCP map keeps its identity until the next bootstrap,
+  // so the server list is rebuilt only then: a fresh array on every render
+  // would rebuild the tool environment and re-render every row in the log.
+  const mcp = useStore(store, (state) => state.bootstrap?.mcp)
+  const mcpServers = useMemo(() => Object.keys(mcp ?? {}), [mcp])
+
   return (
-    <Conversation
-      sessionId={sessionId}
-      title={title}
-      messages={messages}
-      hasMore={data?.hasMore ?? false}
-      loadingOlder={data?.loadingOlder ?? false}
-      error={data?.olderError ?? null}
-      onLoadOlder={loadOlder}
-    />
+    <ToolEnvironmentProvider mcpServers={mcpServers} store={store}>
+      <Conversation
+        sessionId={sessionId}
+        title={title}
+        messages={messages}
+        hasMore={data?.hasMore ?? false}
+        loadingOlder={data?.loadingOlder ?? false}
+        error={data?.olderError ?? null}
+        status={status}
+        onLoadOlder={loadOlder}
+      />
+    </ToolEnvironmentProvider>
   )
 }
 

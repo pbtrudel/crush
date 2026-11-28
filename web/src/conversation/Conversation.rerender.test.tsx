@@ -8,10 +8,10 @@ import Conversation from './Conversation'
 // is how this spec sees a message that rendered again.
 const counters = vi.hoisted(() => ({ toolRows: 0 }))
 
-vi.mock('./ToolCallRow', () => ({
-  default: ({ name, done }: { name: string; done: boolean }) => {
+vi.mock('../tools/ToolCall', () => ({
+  default: ({ call, status }: { call: { name: string }; status: string }) => {
     counters.toolRows += 1
-    return <li>{done ? `${name} answered` : `${name} running`}</li>
+    return <li>{`${call.name} ${status}`}</li>
   },
 }))
 
@@ -80,6 +80,6 @@ describe('Conversation re-renders', () => {
     rerender(conversation([calling, speaking, result('tc-1')]))
     // The answer changes what the call draws, so memoising must not stop it.
     expect(counters.toolRows).toBe(2)
-    expect(screen.getByText('bash answered')).toBeInTheDocument()
+    expect(screen.getByText('bash done')).toBeInTheDocument()
   })
 })

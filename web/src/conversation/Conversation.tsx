@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 
+import type { SessionStatus } from '../api/wire'
+import MessageView from '../chat/MessageView'
+import { isTurnActive } from '../chat/toolStatus'
+import { useResults } from '../chat/useResults'
 import type { WireMessage } from '../store/app'
-import MessageView from './MessageView'
 import styles from './Conversation.module.css'
 
 export interface ConversationProps {
@@ -11,6 +14,8 @@ export interface ConversationProps {
   hasMore: boolean
   loadingOlder: boolean
   error?: string | null
+  // status is the session row's run state; it decides which turn is live.
+  status?: SessionStatus
   onLoadOlder(): void
 }
 
@@ -32,6 +37,7 @@ export default function Conversation({
   hasMore,
   loadingOlder,
   error = null,
+  status,
   onLoadOlder,
 }: ConversationProps) {
   const log = useRef<HTMLDivElement>(null)
@@ -43,28 +49,13 @@ export default function Conversation({
   const newest = messages.length === 0 ? null : messages[messages.length - 1].id
 
   // Tool results live in their own messages, so the calls that answered are
-  // collected from the whole log. The set is rebuilt only when an answer
-  // changes: a token in the last message makes a new array, and a new set
-  // with it would re-render every view that reads one.
-  const answeredIDs = useMemo(() => {
-    const answered = new Set<string>()
-    for (const entry of messages) {
-      for (const part of entry.parts) {
-        if (part.type !== 'tool_result') {
-          continue
-        }
-        const result = part.data as { tool_call_id?: unknown }
-        if (typeof result.tool_call_id === 'string') {
-          answered.add(result.tool_call_id)
-        }
-      }
-    }
-    return [...answered].join(',')
-  }, [messages])
-  const toolResults = useMemo(
-    () => new Set(answeredIDs === '' ? [] : answeredIDs.split(',')),
-    [answeredIDs],
-  )
+  // collected from the whole log. The index keeps its identity while no
+  // result changes, so a streamed token re-renders the last message only.
+  const results = useResults(messages)
+  // Only the turn after the last user message can still be running; a call
+  // left open in an earlier turn is interrupted, whatever the session does.
+  const lastUser = messages.findLastIndex((entry) => entry.role === 'user')
+  const live = isTurnActive(status)
 
   // A session opens at its end, and a message that arrives while the log is
   // at its end is followed. An older page changes neither the session nor the
@@ -118,8 +109,13 @@ export default function Conversation({
             {error}
           </p>
         ) : null}
-        {messages.map((message) => (
-          <MessageView key={message.id} message={message} toolResults={toolResults} />
+        {messages.map((message, index) => (
+          <MessageView
+            key={message.id}
+            message={message}
+            results={results}
+            turnActive={live && index > lastUser}
+          />
         ))}
         <div ref={bottom} />
       </div>

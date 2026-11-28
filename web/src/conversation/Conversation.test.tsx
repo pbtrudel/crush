@@ -153,10 +153,30 @@ describe('Conversation', () => {
         onLoadOlder={vi.fn()}
       />,
     )
-    expect(screen.getByText('done')).toBeInTheDocument()
-    expect(screen.queryByText('running')).toBeNull()
+    expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(screen.queryByText('Running')).toBeNull()
     // The result-only message draws nothing of its own.
     expect(screen.getAllByRole('article')).toHaveLength(1)
+  })
+
+  it('runs only the turn after the last user message of a live session', () => {
+    render(
+      <Conversation
+        sessionId="s1"
+        title="t"
+        messages={[
+          { ...messages[0], parts: [call('tc-1', 'bash', true)] },
+          { ...messages[1], parts: [call('tc-2', 'view', true)] },
+        ]}
+        hasMore={false}
+        loadingOlder={false}
+        status="running"
+        onLoadOlder={vi.fn()}
+      />,
+    )
+    // The earlier turn has moved past its call; only the last one can run.
+    expect(screen.getByText('Interrupted')).toBeInTheDocument()
+    expect(screen.getByText('Running')).toBeInTheDocument()
   })
 
   it('does not move the scroll when an older page is prepended', () => {
