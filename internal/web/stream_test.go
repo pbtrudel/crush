@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -601,6 +602,34 @@ func TestResubscribeAnswersAFreshSnapshot(t *testing.T) {
 	var s SessionSnapshot
 	require.NoError(t, json.Unmarshal(f.Payload, &s))
 	require.Len(t, s.Messages, 1, "the second snapshot carries the new message")
+}
+
+// TestSubscribeReadsTheSessionOnce pins the single read: the snapshot builder
+// takes the session the subscribe handler already read instead of looking it
+// up again, so a tab cannot be answered from two different session states.
+func TestSubscribeReadsTheSessionOnce(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap, which lists sessions rather than reading one.
+	require.Zero(t, fake.GetSessionCalls(), "the bootstrap reads no single session")
+	subscribeStream(t, c, "s1")
+	require.Equal(t, 1, fake.GetSessionCalls(), "the subscribe path reads the session once")
+}
+
+// TestSubscribeReportsAFailedSnapshot pins the error a store failure gets: a
+// code of its own, never the unknown_session a missing session answers, so the
+// tab can tell a session that is gone from a gateway that cannot read it.
+func TestSubscribeReportsAFailedSnapshot(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.SetSessionErr(errors.New("database is locked"))
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
+	f := nextFrameOfType(t.Context(), t, c, frameError)
+	require.Contains(t, string(f.Payload), "snapshot_failed")
+	require.NotContains(t, string(f.Payload), "unknown_session")
 }
 
 // TestSubscribeRefusesAnUnknownSession pins the error frame a stale tab

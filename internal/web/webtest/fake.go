@@ -177,6 +177,11 @@ type Fake struct {
 	// listMessagesGate holds one ListMessages read; set it with
 	// SetListMessagesGate.
 	listMessagesGate *agentModelGate
+	// getSessionCalls counts GetSession reads, so a test can prove a path
+	// reads the session once; sessionErr is what GetSession answers when
+	// set. Set it with SetSessionErr.
+	getSessionCalls int
+	sessionErr      error
 	// initializePrompt is what InitializePrompt answers; set it with
 	// SetInitializePrompt.
 	initializePrompt string
@@ -1046,11 +1051,30 @@ func (f *Fake) PermissionSetMode(m permission.PermissionMode) {
 func (f *Fake) GetSession(_ context.Context, id string) (session.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getSessionCalls++
+	if f.sessionErr != nil {
+		return session.Session{}, f.sessionErr
+	}
 	s, ok := f.sessions[id]
 	if !ok {
 		return session.Session{}, ErrSessionNotFound
 	}
 	return s, nil
+}
+
+// SetSessionErr makes GetSession answer err for every id, the way a store
+// that cannot be read would. A nil err restores the normal answer.
+func (f *Fake) SetSessionErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionErr = err
+}
+
+// GetSessionCalls reports how many GetSession calls the fake has answered.
+func (f *Fake) GetSessionCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.getSessionCalls
 }
 
 // ListSessions answers newest updated first, with the ID breaking ties,

@@ -77,7 +77,7 @@ func TestPayloadsHaveNoNullArrays(t *testing.T) {
 	g, _ := startTest(t)
 	for name, v := range map[string]any{
 		"bootstrap":       g.buildBootstrap(t.Context()),
-		"sessionSnapshot": g.buildSessionSnapshot(t.Context(), "s1", "", messagePageSize),
+		"sessionSnapshot": snapshotOf(t, g, "s1", "", messagePageSize),
 	} {
 		raw, err := json.Marshal(v)
 		require.NoError(t, err, name)
@@ -100,7 +100,7 @@ func TestSessionSnapshotCarriesOneSession(t *testing.T) {
 	fake.SetSessionQueued("s1", []string{"later"})
 	fake.AddHistory(historyFile("h1", "s1", "/tmp/project/main.go", 1))
 
-	s := g.buildSessionSnapshot(t.Context(), "s1", "", messagePageSize)
+	s := snapshotOf(t, g, "s1", "", messagePageSize)
 	require.Equal(t, "s1", s.SessionID)
 	require.NotEmpty(t, s.Session)
 	require.Len(t, s.Messages, 2)
@@ -119,20 +119,9 @@ func TestSessionSnapshotPagesAndFlagsMore(t *testing.T) {
 	for i := range 5 {
 		fake.AddMessage(textMessage("m"+strconv.Itoa(i), "s1", "hello"))
 	}
-	s := g.buildSessionSnapshot(t.Context(), "s1", "", 2)
+	s := snapshotOf(t, g, "s1", "", 2)
 	require.Len(t, s.Messages, 2)
 	require.True(t, s.HasMore)
-}
-
-// TestSessionSnapshotForAnUnknownSession pins the degraded answer: the
-// shell shows an empty session instead of failing the subscription.
-func TestSessionSnapshotForAnUnknownSession(t *testing.T) {
-	t.Parallel()
-	g, _ := startTest(t)
-	s := g.buildSessionSnapshot(t.Context(), "nope", "", messagePageSize)
-	require.Empty(t, s.Session)
-	require.Empty(t, s.Messages)
-	require.False(t, s.HasMore)
 }
 
 func historyFile(id, sessionID, path string, version int64) history.File {

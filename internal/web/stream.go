@@ -457,18 +457,26 @@ func (g *Gateway) readLoop(ctx context.Context, cancel context.CancelFunc, c *co
 }
 
 // handleSubscribe answers a subscribe message with the session's snapshot.
-// The session is reserved on the connection before the snapshot is read, so
-// every frame published while the read runs is buffered for it; the snapshot
-// and the buffer are then flushed together, snapshot first. Without the
-// reservation a frame could arrive before the snapshot that should have
-// carried it.
+// The session is read once and passed to the snapshot builder, so a session
+// the store no longer has answers unknown_session and any other read failure
+// answers snapshot_failed. The session is then reserved on the connection
+// before the rest of the snapshot is read, so every frame published while the
+// read runs is buffered for it; the snapshot and the buffer are then flushed
+// together, snapshot first. Without the reservation a frame could arrive
+// before the snapshot that should have carried it.
 func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string) {
 	if sessionID == "" {
 		g.enqueueError(c, "", "missing_session", "subscribe needs a session_id")
 		return
 	}
-	if !g.sessionExistsQuiet(ctx, sessionID) {
-		g.enqueueError(c, sessionID, "unknown_session", "no such session")
+	sess, err := g.ws.GetSession(ctx, sessionID)
+	if err != nil {
+		if isSessionNotFound(err) {
+			g.enqueueError(c, sessionID, "unknown_session", "no such session")
+			return
+		}
+		slog.Debug("Web subscribe could not read the session", "session_id", sessionID, "error", err)
+		g.enqueueError(c, sessionID, "snapshot_failed", "the session could not be read")
 		return
 	}
 	if !g.hub.beginSubscription(c, sessionID) {
@@ -476,7 +484,7 @@ func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string
 			"this connection holds the maximum number of session subscriptions")
 		return
 	}
-	snap := g.buildSessionSnapshot(ctx, sessionID, "", messagePageSize)
+	snap := g.buildSessionSnapshot(ctx, sess, "", messagePageSize)
 	raw, err := json.Marshal(snap)
 	if err != nil {
 		g.hub.abortSubscription(c, sessionID)
@@ -492,21 +500,6 @@ func (g *Gateway) enqueueError(c *conn, sessionID, code, message string) {
 		return
 	}
 	g.hub.enqueue(c, frame{Seq: g.hub.head(), Type: frameError, Payload: raw})
-}
-
-// sessionExistsQuiet reports whether the workspace still has the session,
-// logging a failure instead of answering an HTTP caller.
-func (g *Gateway) sessionExistsQuiet(ctx context.Context, sessionID string) bool {
-	_, err := g.ws.GetSession(ctx, sessionID)
-	switch {
-	case err == nil:
-		return true
-	case isSessionNotFound(err):
-		return false
-	default:
-		slog.Debug("Web subscribe could not read the session", "session_id", sessionID, "error", err)
-		return false
-	}
 }
 
 func writeFrame(ctx context.Context, ws *websocket.Conn, f frame) bool {

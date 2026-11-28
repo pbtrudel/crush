@@ -479,7 +479,7 @@ func TestSnapshotIncludesFiles(t *testing.T) {
 	t.Parallel()
 	g, fake := startTest(t)
 	seedTree(fake)
-	snap := g.buildSessionSnapshot(t.Context(), "s1", "", messagePageSize)
+	snap := snapshotOf(t, g, "s1", "", messagePageSize)
 	require.Len(t, snap.Files, 2)
 	require.Equal(t, "/repo/b.go", snap.Files[0].Path)
 }
