@@ -185,7 +185,7 @@ describe('MessageView', () => {
     )
     view(message([call('tc-1'), call('tc-2', 'view')]), true, resultIndex([answered]))
     // The answer is beside the call it belongs to, not merely on screen.
-    expect(screen.getByText('Done').closest('li')).toHaveTextContent('bash')
+    expect(screen.getByText('Done').closest('li')).toHaveTextContent('Bash')
     expect(screen.getByText('Running').closest('li')).toHaveTextContent('view')
   })
 
