@@ -36,6 +36,12 @@ function result(metadata: Record<string, unknown> | null, content = ''): ToolRes
   }
 }
 
+// longFile is a file with enough lines to clip, each short enough that the
+// line cap cuts it before the character cap does.
+function longFile(lines: number): string {
+  return Array.from({ length: lines }, (_, index) => `L${index + 1}`).join('\n')
+}
+
 // goFile is a file of about 26 KB: a thousand lines of about 25
 // characters, so a change at line 901 starts past character 20000.
 function goFile(changed: number | null): string {
@@ -71,6 +77,43 @@ describe('the file views', () => {
     const gutters = [...container.querySelectorAll('[aria-hidden="true"]')].map((node) => node.textContent)
     expect(gutters).toEqual(['41', '42'])
     await waitFor(() => expect(container.querySelector('[class*="tok-"]')).not.toBeNull(), { timeout: 10_000 })
+  })
+
+  // A read is a whole file, and a whole file is not a reason to stall the
+  // log: forty lines show until the person asks for the rest, the bound an
+  // output block gets.
+  it('clips a long file it reads to forty lines until asked for the rest', async () => {
+    const content = longFile(2000)
+    const { container } = await open(
+      call('view', { file_path: '/tmp/project/long.go' }),
+      result({ file_path: '/tmp/project/long.go', content }),
+      /Read/,
+    )
+    const rows = () => [...container.querySelectorAll('pre code > span')]
+    expect(rows()).toHaveLength(40)
+    expect(rows().at(-1)).toHaveTextContent('L40')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show all 2000 lines' }))
+    await waitFor(() => expect(rows()).toHaveLength(2000))
+    expect(rows().at(-1)).toHaveTextContent('L2000')
+  })
+
+  // The write fallback has no diff to draw, so it draws the file itself; it
+  // gets the same clip as a read.
+  it('clips the new text of a write with no diff to forty lines', async () => {
+    const content = longFile(2000)
+    const { container } = await open(
+      call('write', { file_path: '/tmp/project/long.go', content }),
+      result({}),
+      /Write/,
+    )
+    const rows = () => [...container.querySelectorAll('pre code > span')]
+    expect(rows()).toHaveLength(40)
+    expect(rows().at(-1)).toHaveTextContent('L40')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show all 2000 lines' }))
+    await waitFor(() => expect(rows()).toHaveLength(2000))
+    expect(rows().at(-1)).toHaveTextContent('L2000')
   })
 
   it('shows an edit as a diff with its counts', async () => {

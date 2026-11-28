@@ -2,14 +2,53 @@ import { useContext, useMemo } from 'react'
 
 import CodeBlock from '../../chat/markdown/CodeBlock'
 import { languageForPath } from '../../chat/markdown/languages'
+import { clipText, thousands } from '../clip'
 import { diffFromPatch, diffStats, diffVersions } from '../diff'
 import type { Diffed } from '../diffCache'
 import { ToolEnvironmentContext } from '../environment'
 import DiffView from '../DiffView'
 import { arrayField, numberField, parseInput, stringField, type ToolInput } from '../input'
 import OutputBlock, { ToolSection } from '../OutputBlock'
+import { useReveal } from '../reveal'
 import styles from '../Tools.module.css'
 import type { ToolBodyProps, ToolView } from '../view'
+
+// maxCodeLines bounds the file text a collapsed read or write view draws: the
+// bound an output block gets, so one huge file cannot stall the log.
+export const maxCodeLines = 40
+
+interface CodeFileProps {
+  code: string
+  language: string | null
+  lineStart?: number
+  revealKey: string
+}
+
+// CodeFile is a file the view draws itself, without a diff. Forty lines and
+// 20000 characters show until the person asks for the rest; only the shown
+// text reaches the highlighter, so a huge file costs a highlight of what is
+// on screen and nothing more.
+function CodeFile({ code, language, lineStart = 1, revealKey }: CodeFileProps) {
+  const { all, reveal } = useReveal(revealKey)
+  const clipped = useMemo(() => clipText(code, maxCodeLines), [code])
+  return (
+    <>
+      <CodeBlock
+        code={all ? code : clipped.text}
+        language={language}
+        lineNumbers
+        lineStart={lineStart}
+      />
+      {!all && (clipped.lineClipped || clipped.charClipped) ? (
+        <button type="button" className={styles.more} onClick={reveal}>
+          {clipped.charClipped
+            ? `Show all (${thousands(code.length)} K characters)`
+            : `Show all ${clipped.lines} lines`}
+        </button>
+      ) : null}
+    </>
+  )
+}
 
 function ErrorSection({ content, revealKey }: { content: string; revealKey: string }) {
   return (
@@ -40,11 +79,11 @@ function ReadBody({ call, input, result }: ToolBodyProps) {
   }
   const path = stringField(metadata, 'file_path') || stringField(input, 'file_path')
   return (
-    <CodeBlock
+    <CodeFile
       code={content}
       language={languageForPath(path)}
-      lineNumbers
       lineStart={(numberField(input, 'offset') ?? 0) + 1}
+      revealKey={`${call.id}:code`}
     />
   )
 }
@@ -181,7 +220,13 @@ function WriteBody({ call, input, result }: ToolBodyProps) {
     return <DiffView lines={lines} revealKey={`${call.id}:diff`} />
   }
   const path = stringField(input, 'file_path')
-  return <CodeBlock code={stringField(input, 'content')} language={languageForPath(path)} lineNumbers />
+  return (
+    <CodeFile
+      code={stringField(input, 'content')}
+      language={languageForPath(path)}
+      revealKey={`${call.id}:code`}
+    />
+  )
 }
 
 export const writeView: ToolView = {
