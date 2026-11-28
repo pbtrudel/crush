@@ -6,6 +6,7 @@ import {
   connectionNotice,
   createAppStore,
   isUnread,
+  isUnreadRow,
   maxSubscriptions,
   reduceBootstrap,
   reduceFrame,
@@ -212,6 +213,25 @@ describe('run_complete frames', () => {
     const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
     const done = reduceFrame(start, frame('run_complete', { type: 'complete', payload: { session_id: 's1', message_id: 'm1' } }, 4, 's1'))
     expect(done).toBe(start)
+  })
+})
+
+describe('isUnreadRow', () => {
+  it('answers what isUnread answers, without looking the row up again', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const state = reduceFrame(
+      start,
+      frame('session', { type: 'updated', payload: { id: 's2', title: 'Tests', message_count: 3, updated_at: 40 } }, 9),
+    )
+    for (const row of state.sessions) {
+      expect(isUnreadRow(state, row), row.id).toBe(isUnread(state, row.id))
+    }
+    const moved = state.sessions.find((row) => row.id === 's2')
+    expect(moved).toBeDefined()
+    expect(isUnreadRow(state, moved!)).toBe(true)
+    // The session on screen is being read, so it never carries the marker.
+    const open = state.sessions.find((row) => row.id === 's1')
+    expect(isUnreadRow({ ...state, selectedSessionId: 's1' }, open!)).toBe(false)
   })
 })
 

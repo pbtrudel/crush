@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 
 import type { ApiClient } from '../api/http'
-import { isUnread, type AppState, type AppStore } from '../store/app'
+import { isUnreadRow, type AppState, type AppStore } from '../store/app'
 import { useStore, type Store } from '../store/store'
 import Sidebar from './Sidebar'
 import { sessionActions } from './actions'
@@ -25,11 +25,12 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
   const actions = useMemo(() => sessionActions(client), [client])
 
   // The unread markers come from a derived string, so the list re-renders
-  // exactly when a marker changes and not on every frame. isUnread is the
-  // one place the seen comparison lives; the component only asks it.
+  // exactly when a marker changes and not on every frame. isUnreadRow is the
+  // one place the seen comparison lives, and it takes the row the filter
+  // already has: looking each id up again would walk the list once per row.
   const unreadIDs = useStore(store, (state) =>
     state.sessions
-      .filter((row) => isUnread(state, row.id))
+      .filter((row) => isUnreadRow(state, row))
       .map((row) => row.id)
       .join(','),
   )

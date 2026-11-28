@@ -339,14 +339,21 @@ function updatedAtOf(state: AppState, sessionID: string): number {
   return updatedAtIn(state.sessions, sessionID)
 }
 
-// isUnread reports whether a session changed since the person last looked at
-// it. The comparison is on the row's updated_at, which the workspace owns: it
-// survives a Crush restart and needs no background subscription.
-export function isUnread(state: AppState, sessionID: string): boolean {
-  if (state.selectedSessionId === sessionID) {
+// isUnreadRow reports whether a session changed since the person last looked
+// at it. The comparison is on the row's updated_at, which the workspace owns:
+// it survives a Crush restart and needs no background subscription.
+export function isUnreadRow(state: AppState, row: SessionRow): boolean {
+  if (state.selectedSessionId === row.id) {
     return false
   }
-  return updatedAtIn(state.sessions, sessionID) > (state.lastSeen[sessionID] ?? 0)
+  return row.updated_at > (state.lastSeen[row.id] ?? 0)
+}
+
+// isUnread is isUnreadRow for a caller that holds an id and not the row. The
+// list asks the row version, so marking a list of sessions costs one pass.
+export function isUnread(state: AppState, sessionID: string): boolean {
+  const row = state.sessions.find((entry) => entry.id === sessionID)
+  return row !== undefined && isUnreadRow(state, row)
 }
 
 export type ConnectionNotice = 'none' | 'reconnecting' | 'ended'
