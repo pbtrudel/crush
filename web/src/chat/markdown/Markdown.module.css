@@ -3,6 +3,14 @@
   line-height: 1.6;
 }
 
+/* The fallback for a source too long, too deep or too broken to parse. */
+.plainText {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .markdown > :first-child {
   margin-top: 0;
 }

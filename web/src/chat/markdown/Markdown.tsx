@@ -2,14 +2,21 @@ import type { AlignType, Definition, Nodes, Root, Table } from 'mdast'
 import { Fragment, createElement, memo, useMemo, type ReactNode } from 'react'
 
 import CodeBlock from './CodeBlock'
+import MarkdownBoundary from './MarkdownBoundary'
 import MathFormula from './Math'
+import PlainText from './PlainText'
 import { safeHref } from './links'
-import { parseMarkdown } from './parse'
+import { maxMarkdownDepth, parseMarkdown, treeDepth } from './parse'
 import styles from './Markdown.module.css'
 
 export interface MarkdownProps {
   source: string
 }
+
+// maxMarkdownSource caps what one message may cost to parse. Past it the
+// source renders as text: a coding chat has no legitimate reply that long,
+// and the furthest tails of adversarial input make a parser quadratic.
+export const maxMarkdownSource = 32 * 1024
 
 interface RenderContext {
   definitions: Map<string, Definition>
@@ -19,17 +26,40 @@ interface RenderContext {
 // React elements: there is no HTML string anywhere, so raw HTML in the
 // source can only ever be text.
 function Markdown({ source }: MarkdownProps) {
-  const tree = useMemo(() => parseMarkdown(source), [source])
-  const context = useMemo(() => ({ definitions: collectDefinitions(tree) }), [tree])
-  return <div className={styles.markdown}>{children(tree.children, context)}</div>
+  const tree = useMemo(() => parseBounded(source), [source])
+  const definitions = useMemo(() => (tree === null ? null : collectDefinitions(tree)), [tree])
+  if (tree === null || definitions === null) {
+    return <PlainText source={source} />
+  }
+  return (
+    <MarkdownBoundary source={source}>
+      <div className={styles.markdown}>{children(tree.children, { definitions })}</div>
+    </MarkdownBoundary>
+  )
 }
 
 export default memo(Markdown)
 
+// parseBounded answers the tree to render, or null when the source must
+// show as text: too long to parse, too deep to walk, or a parser that
+// threw.
+function parseBounded(source: string): Root | null {
+  if (source.length > maxMarkdownSource) {
+    return null
+  }
+  try {
+    const tree = parseMarkdown(source)
+    return treeDepth(tree) > maxMarkdownDepth ? null : tree
+  } catch {
+    return null
+  }
+}
+
 function collectDefinitions(root: Root): Map<string, Definition> {
   const out = new Map<string, Definition>()
   const visit = (node: Nodes) => {
-    if (node.type === 'definition') {
+    // The first definition wins, as in CommonMark.
+    if (node.type === 'definition' && !out.has(node.identifier)) {
       out.set(node.identifier, node)
     }
     if ('children' in node) {

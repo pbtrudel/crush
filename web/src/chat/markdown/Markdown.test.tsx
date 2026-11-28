@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import Markdown from './Markdown'
+import Markdown, { maxMarkdownSource } from './Markdown'
 
 describe('Markdown', () => {
   it('renders headings, emphasis, lists and inline code', () => {
@@ -31,14 +31,51 @@ describe('Markdown', () => {
   it('opens a web link in a new tab without an opener', () => {
     render(<Markdown source={'See [Charm](https://charm.land).'} />)
     const link = screen.getByRole('link', { name: 'Charm' })
-    expect(link).toHaveAttribute('href', 'https://charm.land')
+    expect(link).toHaveAttribute('href', 'https://charm.land/')
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  // The address is an href, not an HTML string: a query keeps its amps.
+  it('keeps a query string intact', () => {
+    render(<Markdown source={'[q](https://x.com/?a=1&b=2)'} />)
+    expect(screen.getByRole('link', { name: 'q' })).toHaveAttribute('href', 'https://x.com/?a=1&b=2')
   })
 
   it('resolves a reference link through its definition', () => {
     render(<Markdown source={'Read [the docs][d].\n\n[d]: https://charm.land/docs'} />)
     expect(screen.getByRole('link', { name: 'the docs' })).toHaveAttribute('href', 'https://charm.land/docs')
+  })
+
+  // CommonMark resolves character references in a destination, so this
+  // address reaches safeHref as javascript: itself.
+  it('keeps an entity-encoded script link inert', () => {
+    const { container } = render(<Markdown source={'[a trap](java&#115;cript:alert(1))'} />)
+    expect(container.querySelector('a')).toBeNull()
+    expect(screen.getByText('a trap')).toBeInTheDocument()
+  })
+
+  it('keeps a protocol-relative link inert', () => {
+    const { container } = render(<Markdown source={'[elsewhere](//evil.com/x)'} />)
+    expect(container.querySelector('a')).toBeNull()
+    expect(screen.getByText('elsewhere')).toBeInTheDocument()
+  })
+
+  it('keeps a reference definition pointing at a script link inert', () => {
+    const { container } = render(<Markdown source={'[a trap][d].\n\n[d]: javascript:alert(1)'} />)
+    expect(container.querySelector('a')).toBeNull()
+    expect(screen.getByText('a trap')).toBeInTheDocument()
+  })
+
+  // The first definition wins, as in CommonMark.
+  it('uses the first definition when one is repeated', () => {
+    render(<Markdown source={'[docs][d].\n\n[d]: https://first.example\n[d]: https://second.example'} />)
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('href', 'https://first.example/')
+  })
+
+  it('renders an autolink as a link', () => {
+    render(<Markdown source={'See <https://charm.land>.'} />)
+    expect(screen.getByRole('link')).toHaveAttribute('href', 'https://charm.land/')
   })
 
   it('keeps raw HTML inert: it is text, never an element', () => {
@@ -74,6 +111,13 @@ describe('Markdown', () => {
     expect(screen.getByRole('link', { name: 'Image: the logo' })).toHaveAttribute('href', 'https://example.com/logo.png')
   })
 
+  it('never loads a data image and never links one', () => {
+    const { container } = render(<Markdown source={'![beacon](data:image/png;base64,AAAA)'} />)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('Image: beacon')
+  })
+
   it('renders a fenced block as code and keeps its text', () => {
     const { container } = render(<Markdown source={'```go\nfunc main() {}\n```'} />)
     expect(container.querySelector('pre')?.textContent).toContain('func main() {}')
@@ -88,5 +132,21 @@ describe('Markdown', () => {
   it('renders an unterminated fence while it streams', () => {
     const { container } = render(<Markdown source={'Here:\n\n```ts\nconst a = 1'} />)
     expect(container.querySelector('pre')?.textContent).toContain('const a = 1')
+  })
+
+  // 2 KB of blockquote markers nests past the depth cap: it must render as
+  // text, not walk a thousand stack frames.
+  it('renders a deeply nested quote as text without throwing', () => {
+    const source = '>'.repeat(2 * 1024)
+    const { container } = render(<Markdown source={source} />)
+    expect(container.textContent).toBe(source)
+    expect(container.querySelector('blockquote')).toBeNull()
+  })
+
+  it('renders a source past the cap as plain text without parsing', () => {
+    const source = 'x'.repeat(maxMarkdownSource + 1)
+    const { container } = render(<Markdown source={source} />)
+    expect(container.textContent).toBe(source)
+    expect(container.querySelector('p')).toBeNull()
   })
 })
