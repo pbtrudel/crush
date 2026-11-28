@@ -5,7 +5,6 @@ import design from '../theme/design-platform.css?raw'
 import view from './DiffView.module.css?raw'
 import {
   clipDiffLines,
-  diffContents,
   diffFromPatch,
   diffStats,
   diffVersions,
@@ -13,12 +12,12 @@ import {
   maxDiffLines,
 } from './diff'
 
-describe('diffContents', () => {
+describe('diffVersions', () => {
   it('numbers both sides and marks the change', () => {
-    const lines = diffContents(
+    const lines = diffVersions(
       'package parser\n\nfunc Parse() {}\n',
       'package parser\n\nfunc Parse() error { return nil }\n',
-    )
+    ).lines
     expect(lines[0]).toMatchObject({ kind: 'hunk' })
     expect(lines.filter((line) => line.kind === 'del')).toEqual([
       { kind: 'del', text: 'func Parse() {}', oldNumber: 3, newNumber: null },
@@ -30,7 +29,7 @@ describe('diffContents', () => {
   })
 
   it('answers no lines for equal text', () => {
-    expect(diffContents('same\n', 'same\n')).toEqual([])
+    expect(diffVersions('same\n', 'same\n').lines).toEqual([])
   })
 
   // A file over 20000 characters is diffed whole: a cut at a fixed offset
@@ -42,7 +41,7 @@ describe('diffContents', () => {
       index === 900 ? 'const value900 = replaced(900)' : `const value${index} = compute(${index})`,
     ).join('\n')
     expect(before.length).toBeGreaterThan(20000)
-    const lines = diffContents(before, after)
+    const lines = diffVersions(before, after).lines
     expect(lines.filter((line) => line.kind === 'hunk')).toHaveLength(1)
     expect(lines.filter((line) => line.kind === 'del')).toEqual([
       { kind: 'del', text: 'const value900 = compute(900)', oldNumber: 901, newNumber: null },
@@ -55,7 +54,7 @@ describe('diffContents', () => {
   // A -y/+y pair with a trailing newline changed has no visible reason
   // without the marker; it describes the line above it.
   it('keeps the no-newline marker as a row', () => {
-    const lines = diffContents('a\ny', 'a\ny\n')
+    const lines = diffVersions('a\ny', 'a\ny\n').lines
     expect(lines.map((line) => line.kind)).toEqual(['hunk', 'context', 'del', 'marker', 'add'])
     expect(lines[3]).toEqual({
       kind: 'marker',
@@ -65,17 +64,10 @@ describe('diffContents', () => {
     })
     expect(diffStats(lines)).toEqual({ added: 1, removed: 1 })
   })
-
-  // The row that was open is unmounted and mounted again by the
-  // virtualized log; the same strings answer the same lines object, so
-  // the second mount does not diff again.
-  it('answers the same lines object for the same inputs', () => {
-    const again = diffContents('one\ntwo\n', 'one\nthree\n')
-    expect(diffContents('one\ntwo\n', 'one\nthree\n')).toBe(again)
-  })
 })
 
-describe('diffVersions', () => {
+
+describe('diffVersions bounds', () => {
   it('answers the lines of a change it can afford', () => {
     const answer = diffVersions('one\ntwo\n', 'one\n2\n')
     expect(answer.tooLarge).toBe(false)
@@ -197,7 +189,7 @@ describe('diffFromPatch', () => {
 
 describe('diffStats', () => {
   it('counts additions and removals only', () => {
-    const lines = diffContents('one\ntwo\nthree\n', 'one\n2\nthree\n')
+    const lines = diffVersions('one\ntwo\nthree\n', 'one\n2\nthree\n').lines
     expect(diffStats(lines)).toEqual({ added: 1, removed: 1 })
     expect(diffStats([])).toEqual({ added: 0, removed: 0 })
   })

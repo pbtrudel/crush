@@ -19,19 +19,20 @@ function probe(compute: () => Diffed) {
 }
 
 describe('ToolEnvironmentProvider', () => {
-  it('starts a fresh diff cache when the session changes', () => {
+  it('starts a fresh diff cache when the conversation remounts', () => {
     const compute = vi.fn(() => refused)
     const { rerender } = render(
-      <ToolEnvironmentProvider sessionId="s1">{probe(compute)}</ToolEnvironmentProvider>,
+      <ToolEnvironmentProvider key="s1">{probe(compute)}</ToolEnvironmentProvider>,
     )
     expect(compute).toHaveBeenCalledOnce()
 
-    // The same session keeps the answer for the row it unmounted.
-    rerender(<ToolEnvironmentProvider sessionId="s1">{probe(compute)}</ToolEnvironmentProvider>)
+    // The same provider keeps the answer for the row it unmounted.
+    rerender(<ToolEnvironmentProvider key="s1">{probe(compute)}</ToolEnvironmentProvider>)
     expect(compute).toHaveBeenCalledOnce()
 
-    // A new session must not read the previous one's cache.
-    rerender(<ToolEnvironmentProvider sessionId="s2">{probe(compute)}</ToolEnvironmentProvider>)
+    // ConversationContainer keys the provider by session id, so a new session
+    // is a new provider and must not read the previous one's cache.
+    rerender(<ToolEnvironmentProvider key="s2">{probe(compute)}</ToolEnvironmentProvider>)
     expect(compute).toHaveBeenCalledTimes(2)
   })
 })

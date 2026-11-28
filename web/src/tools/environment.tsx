@@ -98,47 +98,44 @@ export interface ToolEnvironmentProviderProps {
   mcpServers?: readonly string[]
   store?: ChatStore | null
   renderTranscript?: RenderTranscript | null
-  // sessionId scopes the per-session state: a new session starts with an
-  // empty diff cache, so no answer outlives the session it was computed
-  // for.
-  sessionId?: string | null
   children: ReactNode
 }
 
 // ToolEnvironmentProvider carries what the tool views share. Its value is
-// memoised and its id sets are created once, so opening a row or revealing
-// an output never rebuilds the context: the rows subscribe to the set they
-// care about instead, and one toggle re-renders one row.
+// memoised and its state is created once, so opening a row or revealing an
+// output never rebuilds the context: the rows subscribe to the set they care
+// about instead, and one toggle re-renders one row.
 //
-// A caller must pass stable values: the same mcpServers array and the same
-// renderTranscript function on every render (a module constant, useMemo or
-// useCallback). A fresh array or function would rebuild the context value
-// and re-render every row in the log.
+// One provider is one session. The conversation renders it under a key of the
+// selected session id, so switching sessions remounts it and its diff cache
+// with it: no answer outlives the session it was computed for. A caller must
+// pass stable values: the same mcpServers array and the same renderTranscript
+// function on every render (a module constant, useMemo or useCallback). A
+// fresh array or function would rebuild the context value and re-render every
+// row in the log.
 export function ToolEnvironmentProvider({
   mcpServers = noServers,
   store = null,
   renderTranscript = null,
-  sessionId = null,
   children,
 }: ToolEnvironmentProviderProps) {
-  const [sets] = useState(() => ({
+  const [scoped] = useState(() => ({
     expanded: createIdSet(),
     revealed: createIdSet(),
+    diffs: createDiffCache(),
   }))
-  // A session switch drops the old cache with the render that replaced it.
-  const diffs = useMemo(() => createDiffCache(), [sessionId])
   const value = useMemo(
     () => ({
       mcpServers,
       store,
       renderTranscript,
-      expanded: sets.expanded,
-      revealed: sets.revealed,
-      diffs,
-      toggle: sets.expanded.toggle,
-      reveal: sets.revealed.toggle,
+      expanded: scoped.expanded,
+      revealed: scoped.revealed,
+      diffs: scoped.diffs,
+      toggle: scoped.expanded.toggle,
+      reveal: scoped.revealed.toggle,
     }),
-    [mcpServers, store, renderTranscript, sets, diffs],
+    [mcpServers, store, renderTranscript, scoped],
   )
   return <ToolEnvironmentContext.Provider value={value}>{children}</ToolEnvironmentContext.Provider>
 }

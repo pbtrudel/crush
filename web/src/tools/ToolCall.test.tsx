@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { ToolCallPart, ToolResultPart } from '../chat/parts'
 import { ToolEnvironmentProvider } from './environment'
-import OutputBlock, { maxOutputChars } from './OutputBlock'
+import { maxOutputChars } from './clip'
+import OutputBlock from './OutputBlock'
 import ToolCall from './ToolCall'
 
 const call: ToolCallPart = { id: 'tc-1', name: 'mystery_tool', input: '{"target":"parser.go"}', finished: true }

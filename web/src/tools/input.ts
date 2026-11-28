@@ -36,7 +36,7 @@ export function arrayField(input: ToolInput | null, key: string): unknown[] {
 
 // clipLine cuts a line to max columns, ellipsis included. It never keeps
 // half a surrogate pair: that half renders as a replacement glyph.
-function clipLine(line: string, max: number): string {
+export function clipLine(line: string, max: number): string {
   if (line.length <= max) {
     return line
   }

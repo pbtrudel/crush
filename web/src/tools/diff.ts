@@ -1,6 +1,6 @@
 import { parsePatch, structuredPatch, type StructuredPatchHunk } from 'diff'
 
-import { maxOutputChars } from './OutputBlock'
+import { clipChars, maxOutputChars } from './clip'
 
 // DiffLine is one row of a unified diff: the hunk header, an added line, a
 // removed line, a line both versions share, or a marker such as "\ No
@@ -34,18 +34,6 @@ export const maxDiffEditLength = 1000
 // maxDiffLines is the line clip a diff shares with an output block: a diff
 // longer than this is drawn down to it until the reader asks for the rest.
 export const maxDiffLines = 40
-
-// clipChars cuts text to max UTF-16 code units and drops a dangling high
-// surrogate: half a pair renders as a replacement glyph. It matches the
-// clip OutputBlock applies to a tool result.
-function clipChars(text: string, max: number): string {
-  let end = max
-  const last = text.charCodeAt(end - 1)
-  if (last >= 0xd800 && last <= 0xdbff) {
-    end -= 1
-  }
-  return text.slice(0, end)
-}
 
 // diffInputTooLarge is the memory guard: true when either version is over
 // maxDiffInputChars, where the diff is refused rather than clipped. It
@@ -99,46 +87,24 @@ export interface DiffVersions {
   tooLarge: boolean
 }
 
-// lastDiff is one computed diff. The virtualized log unmounts a row that
-// scrolls away and mounts it again, and the second mount asks for the same
-// two strings; holding the last answer keeps that from running jsdiff
-// again. Comparing two strings is a memcmp, and there is one slot, so the
-// memory a diff can pin is bounded by the input cap.
-let lastDiff: { before: string; after: string; context: number; answer: DiffVersions } | null = null
-
 // diffVersions diffs two versions of a file in the tab, whole, within the
 // memory guard and the edit-distance cap. tooLarge is true when the
 // versions are too big to hold or too far apart to pass: the view then
 // says so instead of drawing a wrong diff.
+//
+// The answer is not cached here. An edit row asks through the environment's
+// per-call cache, which is what keeps a row the virtualized log unmounts and
+// mounts again from running jsdiff a second time; a module-level slot would
+// hold one answer at a time and be evicted by the next row.
 export function diffVersions(before: string, after: string, context = 3): DiffVersions {
-  if (
-    lastDiff !== null &&
-    lastDiff.before === before &&
-    lastDiff.after === after &&
-    lastDiff.context === context
-  ) {
-    return lastDiff.answer
-  }
   if (diffInputTooLarge(before, after)) {
-    const answer: DiffVersions = { lines: [], tooLarge: true }
-    lastDiff = { before, after, context, answer }
-    return answer
+    return { lines: [], tooLarge: true }
   }
   const patch = structuredPatch('a', 'b', before, after, '', '', {
     context,
     maxEditLength: maxDiffEditLength,
   })
-  const answer: DiffVersions =
-    patch === undefined ? { lines: [], tooLarge: true } : { lines: hunkLines(patch.hunks), tooLarge: false }
-  lastDiff = { before, after, context, answer }
-  return answer
-}
-
-// diffContents diffs two versions of a file in the tab, whole. It answers
-// no lines when the guard or the edit-distance cap refuses the pair; use
-// diffVersions to learn which happened.
-export function diffContents(before: string, after: string, context = 3): DiffLine[] {
-  return diffVersions(before, after, context).lines
+  return patch === undefined ? { lines: [], tooLarge: true } : { lines: hunkLines(patch.hunks), tooLarge: false }
 }
 
 // diffFromPatch reads a unified diff, such as the write tool's metadata.

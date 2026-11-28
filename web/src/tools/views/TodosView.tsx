@@ -1,7 +1,7 @@
 import { useCallback, useContext, useSyncExternalStore } from 'react'
 
 import { ToolEnvironmentContext } from '../environment'
-import { numberField, parseInput, stringField, type ToolInput } from '../input'
+import { clipLine, numberField, parseInput, stringField, type ToolInput } from '../input'
 import OutputBlock, { ToolSection } from '../OutputBlock'
 import shared from '../Tools.module.css'
 import type { ToolBodyProps, ToolView } from '../view'
@@ -37,21 +37,6 @@ const statusClass = new Map([
   ['in_progress', styles.in_progress],
   ['pending', styles.pending],
 ])
-
-// clipText cuts a row's text to max UTF-16 code units, ellipsis included.
-// It never keeps half a surrogate pair: that half renders as a replacement
-// glyph.
-function clipText(text: string, max: number): string {
-  if (text.length <= max) {
-    return text
-  }
-  let end = max - 1
-  const last = text.charCodeAt(end - 1)
-  if (last >= 0xd800 && last <= 0xdbff) {
-    end -= 1
-  }
-  return `${text.slice(0, end)}…`
-}
 
 // todoList reads one list of todos. Some models send the array as a JSON
 // string instead of a native one, which todos.go decodes the same way, so a
@@ -132,7 +117,7 @@ function TodosBody({ call, input, result }: ToolBodyProps) {
               <span className={styles.glyph} aria-hidden="true">
                 {glyphs.get(todo.status) ?? '○'}
               </span>
-              <span>{revealed ? text : clipText(text, maxTodoChars)}</span>
+              <span>{revealed ? text : clipLine(text, maxTodoChars)}</span>
             </li>
           )
         })}

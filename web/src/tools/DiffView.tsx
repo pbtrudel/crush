@@ -1,8 +1,9 @@
 import { clsx } from 'clsx'
-import { useCallback, useContext, useMemo, useState, useSyncExternalStore } from 'react'
+import { useMemo } from 'react'
 
+import { thousands } from './clip'
 import { clipDiffLines, type DiffLine } from './diff'
-import { ToolEnvironmentContext } from './environment'
+import { useReveal } from './reveal'
 import styles from './DiffView.module.css'
 
 export interface DiffViewProps {
@@ -24,22 +25,11 @@ const spoken: Record<DiffLine['kind'], string> = {
   context: '',
 }
 
-function thousands(chars: number): number {
-  return Math.ceil(chars / 1000)
-}
-
 // DiffView draws a diff, one row per line with both line numbers. A long
 // diff is clipped the way a long result is, so one huge file cannot stall
 // the log.
 export default function DiffView({ lines, revealKey }: DiffViewProps) {
-  const environment = useContext(ToolEnvironmentContext)
-  const [localAll, setLocalAll] = useState(false)
-  const readRevealed = useCallback(
-    () => revealKey !== undefined && environment.revealed.has(revealKey),
-    [environment, revealKey],
-  )
-  const revealed = useSyncExternalStore(environment.revealed.subscribe, readRevealed)
-  const all = revealKey === undefined ? localAll : revealed
+  const { all, reveal } = useReveal(revealKey)
   const shown = useMemo(
     () => (all ? { rows: lines, clipped: false, byChars: false } : clipDiffLines(lines)),
     [all, lines],
@@ -68,17 +58,7 @@ export default function DiffView({ lines, revealKey }: DiffViewProps) {
         ))}
       </pre>
       {shown.clipped ? (
-        <button
-          type="button"
-          className={styles.more}
-          onClick={() => {
-            if (revealKey === undefined) {
-              setLocalAll(true)
-            } else {
-              environment.reveal(revealKey)
-            }
-          }}
-        >
+        <button type="button" className={styles.more} onClick={reveal}>
           {shown.byChars ? `Show all (${thousands(chars)} K characters)` : `Show all ${lines.length} lines`}
         </button>
       ) : null}

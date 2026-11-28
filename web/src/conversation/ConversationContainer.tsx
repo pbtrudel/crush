@@ -24,7 +24,8 @@ const noPages: WireMessage[] = []
 // The log's scroll position belongs to one session, so a new selection
 // renders a new one rather than the old conversation with the new snapshot:
 // that key is what keeps one session's view from appearing beside another,
-// not even for a single render.
+// not even for a single render. It remounts the tool environment too, so a
+// session's diff cache never outlives it.
 export default function ConversationContainer({ client, store }: ConversationContainerProps) {
   const sessionId = useStore(store, (state) => state.selectedSessionId)
   const title = useStore(
@@ -98,12 +99,7 @@ function SessionConversation({ sessionId, title, client, store }: SessionConvers
   // keeps its identity between renders and a streamed delta re-renders no
   // tool row but the one it changed.
   return (
-    <ToolEnvironmentProvider
-      sessionId={sessionId}
-      mcpServers={mcpServers}
-      store={store}
-      renderTranscript={renderTranscript}
-    >
+    <ToolEnvironmentProvider mcpServers={mcpServers} store={store} renderTranscript={renderTranscript}>
       <Conversation
         sessionId={sessionId}
         title={title}

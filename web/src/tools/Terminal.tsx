@@ -1,9 +1,9 @@
 import { clsx } from 'clsx'
-import { useCallback, useContext, useMemo, useState, useSyncExternalStore } from 'react'
+import { useMemo } from 'react'
 
-import { ToolEnvironmentContext } from './environment'
-import { maxOutputChars } from './OutputBlock'
 import { parseAnsi } from './ansi'
+import { clipChars, maxOutputChars, thousands } from './clip'
+import { useReveal } from './reveal'
 import styles from './Terminal.module.css'
 
 export interface TerminalProps {
@@ -20,17 +20,6 @@ interface Clipped {
   lines: number
   clipped: boolean
   charClipped: boolean
-}
-
-// clipChars cuts text to max UTF-16 code units, dropping a dangling high
-// surrogate: half a pair renders as a replacement glyph.
-function clipChars(text: string, max: number): string {
-  let end = max
-  const last = text.charCodeAt(end - 1)
-  if (last >= 0xd800 && last <= 0xdbff) {
-    end -= 1
-  }
-  return text.slice(0, end)
 }
 
 // countLines counts a document's lines without letting a final newline add
@@ -85,14 +74,7 @@ function clipLines(text: string, maxLines: number): Clipped {
 // The escapes become classes only: the CSP forbids inline style, and no
 // control sequence ever reaches the DOM.
 export default function Terminal({ command = '', output, maxLines = 200, revealKey }: TerminalProps) {
-  const environment = useContext(ToolEnvironmentContext)
-  const [localAll, setLocalAll] = useState(false)
-  const readRevealed = useCallback(
-    () => revealKey !== undefined && environment.revealed.has(revealKey),
-    [environment, revealKey],
-  )
-  const revealed = useSyncExternalStore(environment.revealed.subscribe, readRevealed)
-  const all = revealKey === undefined ? localAll : revealed
+  const { all, reveal } = useReveal(revealKey)
   // The clip is memoised by the output, and the parse by the clipped text,
   // so a re-render costs neither scan nor regex.
   const text = useMemo(() => trimEnd(output), [output])
@@ -107,7 +89,7 @@ export default function Terminal({ command = '', output, maxLines = 200, revealK
   // The label names the limit that cut the text. The character cap runs
   // last, so where both apply it is the one to say.
   const showAll = shown.charClipped
-    ? `Show all (${Math.ceil(text.length / 1000)} K characters)`
+    ? `Show all (${thousands(text.length)} K characters)`
     : `Show all ${shown.lines} lines`
   return (
     <div className={styles.terminal}>
@@ -137,17 +119,7 @@ export default function Terminal({ command = '', output, maxLines = 200, revealK
         </pre>
       ) : null}
       {shown.clipped ? (
-        <button
-          type="button"
-          className={styles.more}
-          onClick={() => {
-            if (revealKey === undefined) {
-              setLocalAll(true)
-            } else {
-              environment.reveal(revealKey)
-            }
-          }}
-        >
+        <button type="button" className={styles.more} onClick={reveal}>
           {showAll}
         </button>
       ) : null}
