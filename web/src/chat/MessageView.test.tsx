@@ -186,7 +186,8 @@ describe('MessageView', () => {
     view(message([call('tc-1'), call('tc-2', 'view')]), true, resultIndex([answered]))
     // The answer is beside the call it belongs to, not merely on screen.
     expect(screen.getByText('Done').closest('li')).toHaveTextContent('Bash')
-    expect(screen.getByText('Running').closest('li')).toHaveTextContent('view')
+    // The title is the view's now that "view" has one: Read.
+    expect(screen.getByText('Running').closest('li')).toHaveTextContent('Read')
   })
 
   it('draws a streamed reply in passes and lands on the last delta', () => {

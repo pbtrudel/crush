@@ -1,0 +1,117 @@
+/* A diff row carries its change in a mark and a spoken word first, so the
+ * colours only reinforce it. The light card is white
+ * (--dsw-alias-bg-layer-2), where DSH's light tokens are too pale for body
+ * text: the success green measures 2.05:1 on the white card and the error
+ * red 3.91:1 on the wash a deletion row paints. The light values below are
+ * mixes of the same token with its darkest neighbour, keeping each hue and
+ * reaching WCAG AA (4.5:1) on the surface each row paints: added 5.33,
+ * removed 4.62. The dark card is rgb(44, 44, 46), where the tokens
+ * themselves are legible, so the dark block names them directly.
+ * diff.test.ts pins the light pair.
+ *
+ * The deletion wash is a color-mix rather than the token sheet's
+ * --dsw-static-red-400-a12: an alpha colour composites over whatever sits
+ * behind the row, which a contrast test cannot measure. Mixing the same
+ * colour at the same share over the card resolves to the pixels a browser
+ * paints, in either theme. */
+.diff {
+  --diff-add-fg: color-mix(in srgb, var(--dsw-static-green-500) 45%, var(--dsw-static-green-900));
+  --diff-del-fg: color-mix(in srgb, var(--dsw-static-red-600) 85%, var(--dsw-static-red-900));
+  --diff-add-bg: var(--dsw-alias-bg-layer-1);
+  --diff-del-bg: color-mix(in srgb, var(--dsw-static-red-400) 12%, var(--dsw-alias-bg-layer-2));
+
+  max-height: 480px;
+  margin: 0;
+  padding: 4px 0;
+  overflow: auto;
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-2);
+  font-family: var(--ds-font-family-code);
+  font-size: var(--crush-font-size-code);
+}
+
+:global(html[data-ds-theme='dark']) .diff {
+  --diff-add-fg: var(--dsw-alias-state-success-primary);
+  --diff-del-fg: var(--dsw-alias-state-error-primary);
+}
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A row is as wide as its longest line and never narrower than the card,
+ * so a row's wash covers all of it while a long line scrolls sideways
+ * instead of wrapping. */
+.line {
+  display: flex;
+  width: max-content;
+  min-width: 100%;
+  min-height: 1.5em;
+  white-space: pre;
+}
+
+.number {
+  flex: none;
+  width: 4ch;
+  padding-right: 6px;
+  color: var(--dsw-alias-label-tertiary);
+  text-align: right;
+  user-select: none;
+}
+
+.mark {
+  flex: none;
+  width: 2ch;
+  user-select: none;
+}
+
+.text {
+  flex: none;
+}
+
+.spoken {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.add {
+  background: var(--diff-add-bg);
+  color: var(--diff-add-fg);
+}
+
+.del {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-fg);
+}
+
+.hunk {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.context {
+  color: inherit;
+}
+
+.empty {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.more {
+  align-self: flex-start;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
