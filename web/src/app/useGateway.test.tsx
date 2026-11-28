@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { HttpError } from '../api/http'
 import { StreamClient } from '../api/stream'
-import type { SessionRow, SessionStatus } from '../api/wire'
+import { bootstrapSchema, type SessionRow, type SessionStatus } from '../api/wire'
 import { maxSubscriptions } from '../store/app'
 import { memoryStorage } from './storage'
 import { useGateway } from './useGateway'
@@ -39,6 +39,27 @@ class FakeSocket {
   open(): void {
     this.onopen?.()
   }
+
+  // receive plays one frame as the gateway would send it.
+  receive(frame: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(frame) })
+  }
+}
+
+// A bootstrap the committed wire schema accepts: the stream validates every
+// frame, so the fixture carries the fields the gateway sends.
+const bootstrap = {
+  version: 'x',
+  working_dir: '/w',
+  current_session_id: '',
+  sessions: [],
+  model: { id: 'm', name: 'n', provider: 'p', context_window: 1, agent_ready: true },
+  agent_ready: true,
+  permission_mode: 'standard',
+  input_mode: 'code',
+  lsp: {},
+  mcp: {},
+  agent_runs: [],
 }
 
 // harness builds the options useGateway takes. Each call records the socket
@@ -206,6 +227,20 @@ describe('useGateway', () => {
     const sent = h.socket.sent.map((raw) => JSON.parse(raw) as { type: string; session_id: string })
     expect(sent).toContainEqual({ type: 'subscribe', session_id: 's1' })
     expect(sent).toContainEqual({ type: 'subscribe', session_id: 's2' })
+    unmount()
+  })
+
+  it('applies the bootstrap the stream already parsed', async () => {
+    const parse = vi.spyOn(bootstrapSchema, 'parse')
+    const h = harness('#t=abc123', false)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    act(() => h.socket.receive({ seq: 1, type: 'bootstrap', payload: bootstrap }))
+    expect(result.current.store.get().bootstrap?.working_dir).toBe('/w')
+    // One parse per frame: the stream validated the payload, and the store
+    // takes it as it arrives instead of validating it again.
+    expect(parse).toHaveBeenCalledTimes(1)
+    parse.mockRestore()
     unmount()
   })
 

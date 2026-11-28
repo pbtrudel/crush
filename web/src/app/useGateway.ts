@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ApiClient, stripTokenFromUrl } from '../api/http'
 import { StreamClient } from '../api/stream'
-import { bootstrapSchema } from '../api/wire'
 import { createAppStore, wantedSubscriptions } from '../store/app'
 import type { AppState, AppStore } from '../store/app'
 import type { Store } from '../store/store'
@@ -105,7 +104,7 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
       url: () => `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/stream`,
       protocols: () => client.wsProtocols(),
       handlers: {
-        onBootstrap: (payload) => store.applyBootstrap(bootstrapSchema.parse(payload)),
+        onBootstrap: (payload) => store.applyBootstrap(payload),
         onFrame: (frame) => store.applyFrame(frame),
         onState: (next) => {
           store.setConnection(next)

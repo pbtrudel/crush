@@ -1,4 +1,4 @@
-import { parseFrame, type ParsedFrame } from './wire'
+import { parseFrame, type Bootstrap, type ParsedFrame } from './wire'
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed'
 
@@ -20,7 +20,9 @@ export function backoffDelay(attempt: number, random: () => number = Math.random
 }
 
 export interface StreamHandlers {
-  onBootstrap(payload: unknown): void
+  // onBootstrap takes the payload parseFrame already validated and typed: the
+  // handler applies it, it does not parse it again.
+  onBootstrap(payload: Bootstrap): void
   onFrame(frame: ParsedFrame): void
   onState(state: ConnectionState): void
   // onClose reports every close with the code the browser gave and whether
@@ -226,7 +228,10 @@ export class StreamClient {
       // when a restarted gateway counts from zero again. A bootstrap the
       // handler could not apply is not seen: the tab still has nothing, so
       // the next connect asks for one again instead of resuming.
-      if (this.deliver(() => this.options.handlers.onBootstrap(frame.payload))) {
+      // parseFrame validated the payload against bootstrapSchema, so this cast
+      // only restates what the frame has already been checked against.
+      const bootstrap = frame.payload as Bootstrap
+      if (this.deliver(() => this.options.handlers.onBootstrap(bootstrap))) {
         this.seq = frame.seq
         this.hasBootstrap = true
       }
