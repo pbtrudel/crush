@@ -1,21 +1,25 @@
-import type { Bootstrap, ParsedFrame, SessionRow, SessionStatus, WebError } from '../api/wire'
+import type {
+  Bootstrap,
+  MessageEvent,
+  ParsedFrame,
+  SessionEvent,
+  SessionRow,
+  SessionSnapshot,
+  SessionStatusPayload,
+  WebError,
+  WireMessage,
+} from '../api/wire'
 import type { ConnectionState } from '../api/stream'
 import { createStore, type Store } from './store'
 import { readSeen, writeSeen } from './seen'
 
-export interface WireMessage {
-  id: string
-  role: string
-  session_id: string
-  parts: { type: string; data: unknown }[]
-  created_at: number
-  updated_at: number
-}
+// WireMessage is the message shape the wire schemas answer with: the store
+// keeps it typed rather than restating the fields.
+export type { WireMessage }
 
 export interface SessionData {
   messages: WireMessage[]
   hasMore: boolean
-  busy: boolean
   queued: string[]
   files: { path: string }[]
   // snapshotSeq counts the snapshots the tab has applied for the session.
@@ -44,7 +48,6 @@ export interface AppState {
 export const emptySessionData: SessionData = {
   messages: [],
   hasMore: false,
-  busy: false,
   queued: [],
   files: [],
   snapshotSeq: 0,
@@ -143,15 +146,7 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
 export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
   switch (frame.type) {
     case 'session_snapshot': {
-      const snapshot = frame.payload as {
-        session_id: string
-        session?: { id?: string }
-        messages: WireMessage[]
-        has_more: boolean
-        busy: boolean
-        queued: string[]
-        files: { path: string }[]
-      }
+      const snapshot = frame.payload as SessionSnapshot
       const id = snapshot.session_id
       let sessions = state.sessions
       if (!hasSession(state, id)) {
@@ -159,7 +154,7 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         // carries a non-empty entity the row comes from it; without one this
         // is a snapshot the tab cannot place and so must not keep.
         const entity = snapshot.session
-        if (entity === undefined || typeof entity.id !== 'string' || entity.id === '') {
+        if (entity === undefined || entity.id === '') {
           return state
         }
         sessions = mergeSessionEvent(state.sessions, { type: 'created', payload: { ...entity, id } })
@@ -172,7 +167,6 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
           [id]: {
             messages: snapshot.messages,
             hasMore: snapshot.has_more,
-            busy: snapshot.busy,
             queued: snapshot.queued,
             files: snapshot.files,
             snapshotSeq: (state.sessionData[id]?.snapshotSeq ?? 0) + 1,
@@ -181,7 +175,7 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       }
     }
     case 'session_status': {
-      const payload = frame.payload as { session_id: string; status: SessionStatus }
+      const payload = frame.payload as SessionStatusPayload
       return {
         ...state,
         sessions: state.sessions.map((row) => (row.id === payload.session_id ? { ...row, status: payload.status } : row)),
@@ -192,16 +186,17 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       // leaves the list. The selected session is marked seen at the
       // updated_at the entity carries, which is how a tab that is open on a
       // session never shows it unread.
-      const id = sessionIDOf(frame.payload)
-      if (id === null) {
+      const event = frame.payload as SessionEvent
+      const id = typeof event.payload.id === 'string' ? event.payload.id : ''
+      if (id === '') {
         return state
       }
       // A session deleted in another tab leaves this one the same way a
       // local delete does: row, messages, selection and seen mark all go.
-      if (isDeletedEnvelope(frame.payload)) {
+      if (event.type === 'deleted') {
         return dropSession(state, id)
       }
-      const sessions = mergeSessionEvent(state.sessions, frame.payload)
+      const sessions = mergeSessionEvent(state.sessions, event)
       const lastSeen =
         id === state.selectedSessionId ? markSeen(state.lastSeen, id, updatedAtIn(sessions, id)) : state.lastSeen
       return { ...state, sessions, lastSeen }
@@ -209,7 +204,7 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
     case 'message': {
       // A deleted message leaves the list; a created or updated one is
       // upserted by id, which is idempotent for a frame a snapshot echoed.
-      const envelope = frame.payload as { type: string; payload: WireMessage }
+      const envelope = frame.payload as MessageEvent
       const id = envelope.payload.session_id
       if (!hasSession(state, id)) {
         return state
@@ -222,18 +217,6 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       return {
         ...state,
         sessionData: { ...state.sessionData, [id]: { ...current, messages } },
-      }
-    }
-    case 'run_complete': {
-      const payload = frame.payload as { type: string; payload: { session_id: string } }
-      const id = payload.payload.session_id
-      if (!hasSession(state, id)) {
-        return state
-      }
-      const current = state.sessionData[id] ?? emptySessionData
-      return {
-        ...state,
-        sessionData: { ...state.sessionData, [id]: { ...current, busy: false } },
       }
     }
     case 'web_error': {
@@ -264,9 +247,9 @@ function upsertMessage(messages: WireMessage[], next: WireMessage): WireMessage[
   return copy
 }
 
-function mergeSessionEvent(rows: SessionRow[], payload: unknown): SessionRow[] {
-  const entity = (payload as { payload?: Record<string, unknown> }).payload
-  const id = typeof entity?.id === 'string' ? entity.id : ''
+function mergeSessionEvent(rows: SessionRow[], event: SessionEvent): SessionRow[] {
+  const entity = event.payload as Record<string, unknown>
+  const id = typeof entity.id === 'string' ? entity.id : ''
   if (!id) {
     return rows
   }
@@ -340,22 +323,12 @@ function hasSession(state: AppState, sessionID: string): boolean {
   return state.sessions.some((row) => row.id === sessionID)
 }
 
-function isDeletedEnvelope(payload: unknown): boolean {
-  return (payload as { type?: string }).type === 'deleted'
-}
-
 // markSeen records the updated_at the person has seen for a session.
 function markSeen(seen: Record<string, number>, sessionID: string, updatedAt: number): Record<string, number> {
   if ((seen[sessionID] ?? 0) >= updatedAt) {
     return seen
   }
   return { ...seen, [sessionID]: updatedAt }
-}
-
-function sessionIDOf(payload: unknown): string | null {
-  const envelope = payload as { payload?: Record<string, unknown> }
-  const id = envelope.payload?.id
-  return typeof id === 'string' ? id : null
 }
 
 function updatedAtIn(rows: SessionRow[], sessionID: string): number {

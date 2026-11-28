@@ -33,7 +33,7 @@ function message(id: string, value: string, role = 'assistant', sessionID = 's1'
 }
 
 function data(messages: WireMessage[], hasMore = false, snapshotSeq = 0): SessionData {
-  return { messages, hasMore, busy: false, queued: [], files: [], snapshotSeq }
+  return { messages, hasMore, queued: [], files: [], snapshotSeq }
 }
 
 const bootstrap = bootstrapSchema.parse({

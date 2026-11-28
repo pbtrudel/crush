@@ -101,7 +101,7 @@ describe('reduceFrame', () => {
     const withCopies = {
       ...start,
       sessionData: {
-        s1: { messages: [copy, copy], hasMore: false, busy: false, queued: [], files: [], snapshotSeq: 0 },
+        s1: { messages: [copy, copy], hasMore: false, queued: [], files: [], snapshotSeq: 0 },
       },
     }
     const next = reduceFrame(
@@ -201,6 +201,17 @@ describe('reduceFrame', () => {
     store.selectSession('s1')
     store.applyFrame(frame('session', { type: 'updated', payload: { id: 's1', title: 'Parser refactor', message_count: 3, updated_at: 55 } }, 10))
     expect(store.get().lastSeen.s1).toBe(55)
+  })
+})
+
+describe('run_complete frames', () => {
+  it('leaves the store alone: the row status is the run state', () => {
+    // The frame says a run ended, and the session_status frame beside it is
+    // what the list shows. Nothing reads a second copy of that state, so the
+    // reducer has nothing to do.
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const done = reduceFrame(start, frame('run_complete', { type: 'complete', payload: { session_id: 's1', message_id: 'm1' } }, 4, 's1'))
+    expect(done).toBe(start)
   })
 })
 
@@ -401,7 +412,6 @@ describe('a snapshot that beats the session created frame', () => {
     expect(next.sessions[0].title).toBe('Fresh')
     expect(next.sessions[0].status).toBe('idle')
     expect(next.sessionData.s4.messages).toHaveLength(1)
-    expect(next.sessionData.s4.busy).toBe(true)
   })
 
   it('still drops a snapshot with no session entity', () => {
