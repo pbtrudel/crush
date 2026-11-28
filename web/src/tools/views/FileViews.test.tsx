@@ -1,10 +1,25 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolCallPart, ToolResultPart } from '../../chat/parts'
 import { ToolEnvironmentProvider } from '../environment'
 import ToolCall from '../ToolCall'
+
+// Every diff the view runs is counted, so a remount can be shown to reuse
+// the cache instead of running jsdiff again.
+const diffRuns = vi.hoisted(() => ({ count: 0 }))
+
+vi.mock('../diff', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../diff')>()
+  return {
+    ...actual,
+    diffVersions: (before: string, after: string, context?: number) => {
+      diffRuns.count += 1
+      return actual.diffVersions(before, after, context)
+    },
+  }
+})
 
 function call(name: string, input: Record<string, unknown>): ToolCallPart {
   return { id: 'tc-1', name, input: JSON.stringify(input), finished: true }
@@ -40,6 +55,10 @@ async function open(entry: ToolCallPart, answer: ToolResultPart | undefined, tit
   await userEvent.click(screen.getByRole('button', { name: title }))
   return view
 }
+
+beforeEach(() => {
+  diffRuns.count = 0
+})
 
 describe('the file views', () => {
   it('reads a file slice with its own line numbers', async () => {
@@ -151,6 +170,32 @@ describe('the file views', () => {
       </ToolEnvironmentProvider>,
     )
     expect(screen.getByText('new 30')).toBeInTheDocument()
+  })
+
+  // The log unmounts a row that scrolls away; the second mount asks for
+  // the same diff, and the environment's per-call cache answers it without
+  // running jsdiff again.
+  it('does not diff an edit again when its row remounts', async () => {
+    const entry = call('edit', { file_path: '/tmp/a.go', old_string: 'x\nold\ny', new_string: 'x\nnew\ny' })
+    const answer = result({ additions: 1, removals: 1, old_content: 'x\nold\ny\n', new_content: 'x\nnew\ny\n' })
+    const view = await open(entry, answer, /Edit/)
+    expect(screen.getByText('old')).toBeInTheDocument()
+    const runs = diffRuns.count
+    expect(runs).toBeGreaterThan(0)
+    view.rerender(
+      <ToolEnvironmentProvider>
+        <ul />
+      </ToolEnvironmentProvider>,
+    )
+    view.rerender(
+      <ToolEnvironmentProvider>
+        <ul>
+          <ToolCall call={entry} result={answer} status="done" messageId="m1" depth={0} />
+        </ul>
+      </ToolEnvironmentProvider>,
+    )
+    expect(screen.getByText('old')).toBeInTheDocument()
+    expect(diffRuns.count).toBe(runs)
   })
 
   // The whole file is diffed, so an edit past character 20000 is its own

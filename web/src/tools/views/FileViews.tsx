@@ -1,8 +1,10 @@
-import { useMemo } from 'react'
+import { useContext, useMemo } from 'react'
 
 import CodeBlock from '../../chat/markdown/CodeBlock'
 import { languageForPath } from '../../chat/markdown/languages'
-import { diffFromPatch, diffStats, diffVersions, type DiffLine } from '../diff'
+import { diffFromPatch, diffStats, diffVersions } from '../diff'
+import type { Diffed } from '../diffCache'
+import { ToolEnvironmentContext } from '../environment'
 import DiffView from '../DiffView'
 import { arrayField, numberField, parseInput, stringField, type ToolInput } from '../input'
 import OutputBlock, { ToolSection } from '../OutputBlock'
@@ -98,13 +100,6 @@ function lastNewString(input: ToolInput | null): string {
   return last === undefined ? stringField(input, 'new_string') : stringField(last, 'new_string')
 }
 
-interface Diffed {
-  lines: DiffLine[]
-  // gaveUp is true when neither the file's two versions nor the call's own
-  // strings could be diffed, so the view has to show the text instead.
-  gaveUp: boolean
-}
-
 // editDiff diffs the file's two versions, falls back to the call's own
 // strings when that pair is too far apart, and gives up only when both
 // are. Every attempt pays the same bounds.
@@ -123,6 +118,7 @@ function editDiff(filePair: [string, string] | null, callPairs: [string, string]
 }
 
 function EditBody({ call, input, result }: ToolBodyProps) {
+  const environment = useContext(ToolEnvironmentContext)
   const isError = result?.isError === true
   const metadata = isError ? null : parseInput(result?.metadata ?? '')
   const before = stringField(metadata, 'old_content')
@@ -138,7 +134,12 @@ function EditBody({ call, input, result }: ToolBodyProps) {
     () => (finished && !isError ? editPairs(input) : []),
     [finished, isError, input],
   )
-  const diffed = useMemo(() => editDiff(filePair, callPairs), [filePair, callPairs])
+  // The environment's cache answers a row the log unmounted and mounted
+  // again; only a new pair of versions runs jsdiff.
+  const diffed = useMemo(
+    () => environment.diffs.editDiff(call.id, filePair, callPairs, () => editDiff(filePair, callPairs)),
+    [environment, call.id, filePair, callPairs],
+  )
   const newText = after !== '' ? after : lastNewString(input)
   if (isError) {
     return <ErrorSection content={result?.content ?? ''} revealKey={`${call.id}:error`} />

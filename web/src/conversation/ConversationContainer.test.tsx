@@ -1,13 +1,26 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ApiClient } from '../api/http'
 import { HttpError } from '../api/http'
 import { bootstrapSchema, type ParsedFrame, type SessionRow as SessionRowData } from '../api/wire'
 import { createAppStore, emptySessionData, type AppState, type SessionData, type WireMessage } from '../store/app'
 import { memoryStorage } from '../app/storage'
+import { stubLayout } from '../test/layout'
 import ConversationContainer from './ConversationContainer'
+
+// jsdom reports a zero-height log, and the virtualizer renders no row in
+// an empty viewport. The stub gives it one, so every row is in view.
+let restore: () => void = () => undefined
+
+beforeEach(() => {
+  restore = stubLayout({ viewport: 600, row: 60 })
+})
+
+afterEach(() => {
+  restore()
+})
 
 function row(overrides: Partial<SessionRowData> = {}): SessionRowData {
   return {

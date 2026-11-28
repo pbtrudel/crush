@@ -1,10 +1,11 @@
 import { act, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ApiClient } from '../api/http'
 import type { ParsedFrame, SessionRow } from '../api/wire'
 import { memoryStorage } from '../app/storage'
 import { createAppStore, emptySessionData, type AppState, type WireMessage } from '../store/app'
+import { stubLayout } from '../test/layout'
 import ConversationContainer from './ConversationContainer'
 
 // The tool row stands in for everything a message draws: counting its renders
@@ -64,9 +65,18 @@ function setup(messages: WireMessage[]) {
   return store
 }
 
+// jsdom reports a zero-height log, and the virtualizer renders no row in
+// an empty viewport. The stub gives it one, so every row is in view.
+let restore: () => void = () => undefined
+
 beforeEach(() => {
+  restore = stubLayout({ viewport: 600, row: 60 })
   counters.rows = {}
   counters.environments = []
+})
+
+afterEach(() => {
+  restore()
 })
 
 describe('ConversationContainer re-renders', () => {

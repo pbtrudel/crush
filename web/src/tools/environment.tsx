@@ -2,6 +2,7 @@ import { createContext, useMemo, useState, type ReactNode } from 'react'
 
 import type { AppState, AppStore, WireMessage } from '../store/app'
 import type { Store } from '../store/store'
+import { createDiffCache, type DiffCache } from './diffCache'
 
 export type ChatStore = Store<AppState> & AppStore
 
@@ -29,6 +30,9 @@ export interface ToolEnvironment {
   // revealed holds the output blocks the person asked to see whole, by
   // block key, so a revealed result survives a remount too.
   revealed: IdSet
+  // diffs keeps each edit's diff by call id, so a row the log unmounts and
+  // mounts again does not run jsdiff a second time.
+  diffs: DiffCache
   toggle(callId: string): void
   reveal(key: string): void
 }
@@ -73,12 +77,19 @@ const inertIds: IdSet = {
   toggle: () => undefined,
 }
 
+// noDiffCache is the default context's cache: a row rendered without a
+// provider computes its diff and keeps nothing.
+const noDiffCache: DiffCache = {
+  editDiff: (_callId, _filePair, _callPairs, compute) => compute(),
+}
+
 export const ToolEnvironmentContext = createContext<ToolEnvironment>({
   mcpServers: noServers,
   store: null,
   renderTranscript: null,
   expanded: inertIds,
   revealed: inertIds,
+  diffs: noDiffCache,
   toggle: () => undefined,
   reveal: () => undefined,
 })
@@ -105,7 +116,11 @@ export function ToolEnvironmentProvider({
   renderTranscript = null,
   children,
 }: ToolEnvironmentProviderProps) {
-  const [sets] = useState(() => ({ expanded: createIdSet(), revealed: createIdSet() }))
+  const [sets] = useState(() => ({
+    expanded: createIdSet(),
+    revealed: createIdSet(),
+    diffs: createDiffCache(),
+  }))
   const value = useMemo(
     () => ({
       mcpServers,
@@ -113,6 +128,7 @@ export function ToolEnvironmentProvider({
       renderTranscript,
       expanded: sets.expanded,
       revealed: sets.revealed,
+      diffs: sets.diffs,
       toggle: sets.expanded.toggle,
       reveal: sets.revealed.toggle,
     }),

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { SessionStatus } from '../api/wire'
 import MessageView from '../chat/MessageView'
@@ -7,6 +8,7 @@ import { turnFooters } from '../chat/turns'
 import { useResults } from '../chat/useResults'
 import UsageSummary, { type Usage } from '../chat/UsageSummary'
 import type { WireMessage } from '../store/app'
+import { anchoredScrollTop, isAtEnd, prependedCount } from './scroll'
 import styles from './Conversation.module.css'
 
 export interface ConversationProps {
@@ -23,19 +25,60 @@ export interface ConversationProps {
   onLoadOlder(): void
 }
 
-// followDistance is how close to the end the log counts as "at the end". A
-// few pixels of slack keep a fractional device pixel from unpinning it.
-const followDistance = 24
-
-// untitled is what a session with no row or no title is called, so the header
-// is never blank.
 const untitled = 'Untitled session'
 
-// Conversation is the read-only chat: the session's title, one message view
-// per message and, while the gateway says there is history before the first
-// page, the button that asks for it.
-export default function Conversation({
-  sessionId,
+// edgeKey is row 0, the history edge, so a message id never collides with
+// it.
+const edgeKey = 'history-edge'
+
+// estimatedRowHeight is a guess for a row not measured yet. Only rows near
+// the view are ever measured, so the spacer's height is partly a guess.
+const estimatedRowHeight = 120
+
+// Shape is what the last commit left: the row keys, the scroll top and
+// where the first message started, which is what a prepend is measured
+// against.
+interface Shape {
+  keys: string[]
+  scrollTop: number
+  firstStart: number
+}
+
+export default function Conversation(props: ConversationProps) {
+  if (props.sessionId === null) {
+    return <p className={styles.empty}>Select a session</p>
+  }
+  // A new session is a new log: it opens at its end with fresh state.
+  return <Log key={props.sessionId} {...props} />
+}
+
+interface HistoryEdgeProps {
+  hasMore: boolean
+  loadingOlder: boolean
+  error: string | null
+  onLoadOlder(): void
+}
+
+function HistoryEdge({ hasMore, loadingOlder, error, onLoadOlder }: HistoryEdgeProps) {
+  return (
+    <div className={styles.edge}>
+      {hasMore ? (
+        <button type="button" className={styles.older} onClick={onLoadOlder} disabled={loadingOlder}>
+          {loadingOlder ? 'Loading…' : 'Load older messages'}
+        </button>
+      ) : (
+        <p className={styles.start}>Start of the session</p>
+      )}
+      {error ? (
+        <p role="alert" className={styles.error}>
+          {error}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function Log({
   title,
   messages,
   hasMore,
@@ -46,56 +89,83 @@ export default function Conversation({
   onLoadOlder,
 }: ConversationProps) {
   const log = useRef<HTMLDivElement>(null)
-  const bottom = useRef<HTMLDivElement>(null)
-  // pinned is whether the log sat at its end before the last change: a new
-  // message follows the conversation only while the person is already there.
+  // pinned is whether the reader sits at the end. It is a ref because the
+  // commit reads it, and a state would lag one render behind the scroll.
   const pinned = useRef(true)
-  const seen = useRef<{ sessionId: string | null; newest: string | null } | null>(null)
-  const newest = messages.length === 0 ? null : messages[messages.length - 1].id
+  const shape = useRef<Shape | null>(null)
+  const [away, setAway] = useState(false)
 
-  // Tool results live in their own messages, so the calls that answered are
-  // collected from the whole log. The index keeps its identity while no
-  // result changes, so a streamed token re-renders the last message only.
+  // The index is rebuilt only when a result changes, so a streamed token
+  // renders the message it lands in and no other.
   const results = useResults(messages)
-  // One footer per assistant message that ends a turn, rebuilt only when the
-  // log changes: every settled message gets the same string it had, so a
-  // streamed token renders the message it lands in and no other.
+  // One footer per assistant message that ends a turn, rebuilt only when
+  // the log changes: every settled message gets the same string it had.
   const footers = useMemo(() => turnFooters(messages), [messages])
-  // Only the turn after the last user message can still be running; a call
-  // left open in an earlier turn is interrupted, whatever the session does.
+  const keys = useMemo(() => messages.map((entry) => entry.id), [messages])
+  // Only the turn after the last user message can still be running.
   const lastUser = messages.findLastIndex((entry) => entry.role === 'user')
   const live = isTurnActive(status)
 
-  // A session opens at its end, and a message that arrives while the log is
-  // at its end is followed. An older page changes neither the session nor the
-  // newest message, so loading one never moves the view.
-  useEffect(() => {
-    const previous = seen.current
-    seen.current = { sessionId, newest }
-    if (previous === null || previous.sessionId !== sessionId) {
-      pinned.current = true
-      bottom.current?.scrollIntoView?.({ block: 'end' })
-      return
-    }
-    if (previous.newest === newest || !pinned.current) {
-      return
-    }
-    bottom.current?.scrollIntoView?.({ block: 'end' })
-  }, [sessionId, newest])
+  const virtualizer = useVirtualizer({
+    count: messages.length + 1,
+    getScrollElement: () => log.current,
+    estimateSize: () => estimatedRowHeight,
+    overscan: 6,
+    getItemKey: (index) => (index === 0 ? edgeKey : (keys[index - 1] ?? index)),
+    // A measurement re-renders on the next frame instead of inside the
+    // commit that measured it, which React warns about.
+    useFlushSync: false,
+  })
 
-  // The scroll position is read here because the browser is the only one
-  // that knows it: by the time a new message is in the DOM it is too late.
-  const trackScroll = () => {
+  // Every commit: follow the end while pinned, or keep the old first
+  // message in place after a prepend. Reading the total size first
+  // rebuilds the measurements, so the start below includes every row this
+  // commit measured.
+  useLayoutEffect(() => {
     const element = log.current
     if (element === null) {
       return
     }
-    pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight <= followDistance
-  }
+    virtualizer.getTotalSize()
+    const previous = shape.current
+    const added = previous === null ? 0 : prependedCount(previous.keys, keys)
+    if (previous === null || pinned.current) {
+      element.scrollTop = element.scrollHeight
+    } else if (added > 0) {
+      const start = virtualizer.measurementsCache[added + 1]?.start
+      if (start !== undefined) {
+        element.scrollTop = anchoredScrollTop(previous.scrollTop, previous.firstStart, start)
+      }
+    }
+    shape.current = {
+      keys,
+      scrollTop: element.scrollTop,
+      firstStart: virtualizer.measurementsCache[1]?.start ?? 0,
+    }
+  })
 
-  if (sessionId === null) {
-    return <p className={styles.empty}>Select a session</p>
-  }
+  const trackScroll = useCallback(() => {
+    const element = log.current
+    if (element === null) {
+      return
+    }
+    const atEnd = isAtEnd(element)
+    pinned.current = atEnd
+    setAway(!atEnd)
+    if (shape.current !== null) {
+      shape.current.scrollTop = element.scrollTop
+    }
+  }, [])
+
+  const jumpToEnd = useCallback(() => {
+    const element = log.current
+    if (element === null) {
+      return
+    }
+    pinned.current = true
+    setAway(false)
+    element.scrollTop = element.scrollHeight
+  }, [])
 
   return (
     <section className={styles.conversation} aria-label="Conversation">
@@ -103,32 +173,56 @@ export default function Conversation({
         <h1 className={styles.title}>{title === '' ? untitled : title}</h1>
         {usage !== null ? <UsageSummary usage={usage} /> : null}
       </header>
-      <div ref={log} className={styles.log} data-testid="conversation-log" onScroll={trackScroll}>
-        {hasMore ? (
-          <button
-            type="button"
-            className={styles.older}
-            onClick={onLoadOlder}
-            disabled={loadingOlder}
-          >
-            {loadingOlder ? 'Loading…' : 'Load older messages'}
+      <div className={styles.body}>
+        <div
+          ref={log}
+          className={styles.log}
+          data-testid="conversation-log"
+          role="log"
+          aria-label="Conversation log"
+          // The log is a reading surface: announcing every streamed delta
+          // would talk over the reader instead of saying something new.
+          aria-live="off"
+          onScroll={trackScroll}
+        >
+          {/* The spacer's height and each row's offset are geometry the
+              virtualizer computes; React writes them through the CSSOM. */}
+          <div className={styles.spacer} style={{ height: virtualizer.getTotalSize() }}>
+            {virtualizer.getVirtualItems().map((item) => {
+              const message = item.index === 0 ? undefined : messages[item.index - 1]
+              return (
+                <div
+                  key={item.key}
+                  ref={virtualizer.measureElement}
+                  data-index={item.index}
+                  className={styles.row}
+                  style={{ transform: `translateY(${item.start}px)` }}
+                >
+                  {message === undefined ? (
+                    <HistoryEdge
+                      hasMore={hasMore}
+                      loadingOlder={loadingOlder}
+                      error={error}
+                      onLoadOlder={onLoadOlder}
+                    />
+                  ) : (
+                    <MessageView
+                      message={message}
+                      results={results}
+                      turnActive={live && item.index - 1 > lastUser}
+                      footer={footers.get(message.id) ?? null}
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        {away ? (
+          <button type="button" className={styles.toEnd} onClick={jumpToEnd}>
+            Back to bottom
           </button>
         ) : null}
-        {error ? (
-          <p role="alert" className={styles.error}>
-            {error}
-          </p>
-        ) : null}
-        {messages.map((message, index) => (
-          <MessageView
-            key={message.id}
-            message={message}
-            results={results}
-            turnActive={live && index > lastUser}
-            footer={footers.get(message.id) ?? null}
-          />
-        ))}
-        <div ref={bottom} />
       </div>
     </section>
   )

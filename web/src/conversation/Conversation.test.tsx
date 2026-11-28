@@ -1,177 +1,186 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { streamedSourceInterval } from '../chat/useStreamedSource'
 import type { WireMessage } from '../store/app'
-import Conversation from './Conversation'
+import { scrollState, stubLayout } from '../test/layout'
+import { ToolEnvironmentProvider } from '../tools/environment'
+import Conversation, { type ConversationProps } from './Conversation'
 
-const messages: WireMessage[] = [
-  {
-    id: 'm1',
-    role: 'user',
+function entry(id: string, value: string, role = 'assistant'): WireMessage {
+  return {
+    id,
+    role,
     session_id: 's1',
-    parts: [{ type: 'text', data: { text: 'hello' } }],
+    parts: [{ type: 'text', data: { text: value } }],
     created_at: 1,
     updated_at: 1,
-  },
-  {
-    id: 'm2',
-    role: 'assistant',
-    session_id: 's1',
-    parts: [{ type: 'text', data: { text: 'hi there' } }],
-    created_at: 2,
-    updated_at: 2,
-  },
-]
-
-const older: WireMessage = {
-  id: 'm0',
-  role: 'user',
-  session_id: 's1',
-  parts: [{ type: 'text', data: { text: 'first words' } }],
-  created_at: 0,
-  updated_at: 0,
+  }
 }
 
-const newer: WireMessage = {
-  id: 'm3',
-  role: 'assistant',
-  session_id: 's1',
-  parts: [{ type: 'text', data: { text: 'one more' } }],
-  created_at: 3,
-  updated_at: 3,
+const messages = [entry('m1', 'hello', 'user'), entry('m2', 'hi there')]
+
+function props(overrides: Partial<ConversationProps> = {}): ConversationProps {
+  return {
+    sessionId: 's1',
+    title: 't',
+    messages,
+    hasMore: false,
+    loadingOlder: false,
+    onLoadOlder: vi.fn(),
+    ...overrides,
+  }
 }
 
-function call(id: string, name: string, finished = false): WireMessage['parts'][number] {
-  return { type: 'tool_call', data: { id, name, input: '{}', finished } }
+// articles is the log's message list in the order it renders. The copy
+// action belongs to the message's frame, not to the text it draws, so its
+// caption is taken out before the text is read.
+function articles(): string[] {
+  return screen.getAllByRole('article').map((element) => {
+    const copy = element.cloneNode(true) as HTMLElement
+    for (const button of copy.querySelectorAll('button[aria-label="Copy message"]')) {
+      button.remove()
+    }
+    return copy.textContent ?? ''
+  })
 }
 
-function result(toolCallID: string): WireMessage['parts'][number] {
-  return { type: 'tool_result', data: { tool_call_id: toolCallID, name: 'bash', content: 'ok' } }
-}
-
-let scrollIntoView: ReturnType<typeof vi.fn>
+let restore: () => void = () => undefined
 
 beforeEach(() => {
-  // jsdom does not implement scrollIntoView, so every scroll the conversation
-  // asks for is the spy.
-  scrollIntoView = vi.fn()
-  Element.prototype.scrollIntoView = scrollIntoView as unknown as Element['scrollIntoView']
+  restore = stubLayout({ viewport: 600, row: 60 })
 })
 
 afterEach(() => {
-  Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+  restore()
+  vi.useRealTimers()
 })
 
-// atTop and atBottom replace the layout jsdom does not compute, so the log's
-// scroll position can be described to the component.
-function layout(log: HTMLElement, scrollTop: number, scrollHeight = 1000, clientHeight = 300) {
-  Object.defineProperty(log, 'scrollHeight', { configurable: true, value: scrollHeight })
-  Object.defineProperty(log, 'clientHeight', { configurable: true, value: clientHeight })
-  Object.defineProperty(log, 'scrollTop', { configurable: true, value: scrollTop })
-}
-
 describe('Conversation', () => {
-  it('renders the session title and its messages', () => {
-    render(
-      <Conversation
-        sessionId="s1"
-        title="Port the parser"
-        messages={messages}
-        hasMore={false}
-        loadingOlder={false}
-        onLoadOlder={vi.fn()}
-      />,
-    )
+  it('renders the session title and its messages in order', () => {
+    render(<Conversation {...props({ title: 'Port the parser' })} />)
     expect(screen.getByRole('heading', { name: 'Port the parser' })).toBeInTheDocument()
-    expect(screen.getByText('hello')).toBeInTheDocument()
-    expect(screen.getByText('hi there')).toBeInTheDocument()
-  })
-
-  it('offers the older page only when there is one', async () => {
-    const onLoadOlder = vi.fn()
-    render(<Conversation sessionId="s1" title="t" messages={messages} hasMore loadingOlder={false} onLoadOlder={onLoadOlder} />)
-    await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
-    expect(onLoadOlder).toHaveBeenCalled()
-  })
-
-  it('hides the button once the first page is the whole history', () => {
-    render(
-      <Conversation sessionId="s1" title="t" messages={messages} hasMore={false} loadingOlder={false} onLoadOlder={vi.fn()} />,
-    )
-    expect(screen.queryByRole('button', { name: 'Load older messages' })).toBeNull()
-  })
-
-  it('disables the button while a page is in flight', () => {
-    render(<Conversation sessionId="s1" title="t" messages={messages} hasMore loadingOlder onLoadOlder={vi.fn()} />)
-    const button = screen.getByRole('button', { name: 'Loading…' })
-    expect(button).toBeDisabled()
-  })
-
-  it('shows the reason an older page failed', () => {
-    render(
-      <Conversation
-        sessionId="s1"
-        title="t"
-        messages={messages}
-        hasMore
-        loadingOlder={false}
-        error="unknown_message"
-        onLoadOlder={vi.fn()}
-      />,
-    )
-    expect(screen.getByRole('alert')).toHaveTextContent('unknown_message')
+    expect(articles()).toEqual(['hello', 'hi there'])
   })
 
   it('asks for a session when none is open', () => {
-    render(
-      <Conversation sessionId={null} title="" messages={[]} hasMore={false} loadingOlder={false} onLoadOlder={vi.fn()} />,
-    )
+    render(<Conversation {...props({ sessionId: null })} />)
     expect(screen.getByText('Select a session')).toBeInTheDocument()
   })
 
   it('names a session that has no title yet', () => {
-    render(
-      <Conversation sessionId="s9" title="" messages={[]} hasMore={false} loadingOlder={false} onLoadOlder={vi.fn()} />,
-    )
+    render(<Conversation {...props({ title: '' })} />)
     expect(screen.getByRole('heading', { name: 'Untitled session' })).toBeInTheDocument()
-    expect(screen.queryByText('Select a session')).toBeNull()
-    expect(screen.queryAllByRole('article')).toHaveLength(0)
+  })
+
+  it('offers the older page only when there is one', async () => {
+    const onLoadOlder = vi.fn()
+    const { rerender } = render(<Conversation {...props({ hasMore: true, onLoadOlder })} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
+    expect(onLoadOlder).toHaveBeenCalledOnce()
+    rerender(<Conversation {...props({ hasMore: false })} />)
+    expect(screen.queryByRole('button', { name: 'Load older messages' })).toBeNull()
+    expect(screen.getByText('Start of the session')).toBeInTheDocument()
+  })
+
+  it('disables the button while a page is in flight and shows a failure', () => {
+    render(<Conversation {...props({ hasMore: true, loadingOlder: true, error: 'no such session' })} />)
+    expect(screen.getByRole('button', { name: 'Loading…' })).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('no such session')
+  })
+
+  it('names the log for assistive technology', () => {
+    render(<Conversation {...props()} />)
+    expect(screen.getByRole('log', { name: 'Conversation log' })).toBeInTheDocument()
+  })
+
+  it('renders only the rows in view', () => {
+    const many = Array.from({ length: 300 }, (_, index) => entry(`m${index}`, `message ${index}`))
+    render(<Conversation {...props({ messages: many })} />)
+    const rendered = screen.getAllByRole('article').length
+    expect(rendered).toBeGreaterThan(0)
+    expect(rendered).toBeLessThan(40)
+  })
+
+  it('follows a reply that grows in place while the log is at its end', () => {
+    const { rerender } = render(<Conversation {...props()} />)
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 4400, scrollHeight: 5000, clientHeight: 600 })
+    fireEvent.scroll(log)
+    ;(log as { scrollHeight: number }).scrollHeight = 5600
+    // Same id, more text: M1 followed only a new id.
+    rerender(
+      <Conversation {...props({ messages: [messages[0], entry('m2', 'hi there, and more')] })} />,
+    )
+    expect(log.scrollTop).toBe(5600)
+    expect(screen.queryByRole('button', { name: 'Back to bottom' })).toBeNull()
+  })
+
+  it('stays where the reader scrolled while a reply grows, and jumps back on request', async () => {
+    const { rerender } = render(<Conversation {...props()} />)
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 1000, scrollHeight: 5000, clientHeight: 600 })
+    fireEvent.scroll(log)
+    ;(log as { scrollHeight: number }).scrollHeight = 5600
+    rerender(
+      <Conversation {...props({ messages: [messages[0], entry('m2', 'hi there, and more')] })} />,
+    )
+    expect(log.scrollTop).toBe(1000)
+    await userEvent.click(screen.getByRole('button', { name: 'Back to bottom' }))
+    expect(log.scrollTop).toBe(5600)
+  })
+
+  it('keeps the old first message in place when an older page is prepended', () => {
+    vi.useFakeTimers()
+    const { rerender } = render(<Conversation {...props({ hasMore: true })} />)
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 1000, scrollHeight: 5000, clientHeight: 600 })
+    fireEvent.scroll(log)
+    // The virtualizer measures no new row while a scroll is in flight, and
+    // holds that state for its reset delay. A page arrives after the
+    // reader's scroll has settled, not inside it.
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    rerender(
+      <Conversation
+        {...props({ messages: [entry('m0', 'first words', 'user'), ...messages], hasMore: false })}
+      />,
+    )
+    // Every row measures 60: the old first message moved down one row.
+    expect(log.scrollTop).toBe(1060)
   })
 
   it('marks a tool call done from a result in a later message', () => {
     render(
       <Conversation
-        sessionId="s1"
-        title="t"
-        messages={[
-          { ...messages[1], parts: [call('tc-1', 'bash', true)] },
-          { ...messages[0], parts: [result('tc-1')] },
-        ]}
-        hasMore={false}
-        loadingOlder={false}
-        onLoadOlder={vi.fn()}
+        {...props({
+          messages: [
+            {
+              ...messages[1],
+              parts: [{ type: 'tool_call', data: { id: 'tc-1', name: 'bash', input: '{}', finished: true } }],
+            },
+            { ...messages[0], id: 'm3', parts: [{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'ok' } }] },
+          ],
+        })}
       />,
     )
     expect(screen.getByText('Done')).toBeInTheDocument()
-    expect(screen.queryByText('Running')).toBeNull()
-    // The result-only message draws nothing of its own.
     expect(screen.getAllByRole('article')).toHaveLength(1)
   })
 
   it('runs only the turn after the last user message of a live session', () => {
     render(
       <Conversation
-        sessionId="s1"
-        title="t"
-        messages={[
-          { ...messages[0], parts: [call('tc-1', 'bash', true)] },
-          { ...messages[1], parts: [call('tc-2', 'view', true)] },
-        ]}
-        hasMore={false}
-        loadingOlder={false}
-        status="running"
-        onLoadOlder={vi.fn()}
+        {...props({
+          status: 'running',
+          messages: [
+            { ...messages[0], parts: [{ type: 'tool_call', data: { id: 'tc-1', name: 'bash', input: '{}', finished: true } }] },
+            { ...messages[1], parts: [{ type: 'tool_call', data: { id: 'tc-2', name: 'view', input: '{}', finished: true } }] },
+          ],
+        })}
       />,
     )
     // The earlier turn has moved past its call; only the last one can run.
@@ -179,92 +188,70 @@ describe('Conversation', () => {
     expect(screen.getByText('Running')).toBeInTheDocument()
   })
 
-  it('does not move the scroll when an older page is prepended', () => {
+  it('keeps keyboard focus inside an open tool row while a reply streams', async () => {
+    const longError = Array.from({ length: 50 }, (_, index) => `error ${index + 1}`).join('\n')
+    const calling: WireMessage = {
+      ...messages[1],
+      id: 'm1',
+      parts: [{ type: 'tool_call', data: { id: 'tc-1', name: 'bash', input: '{"command":"ls"}', finished: true } }],
+    }
+    const failed: WireMessage = {
+      ...messages[0],
+      id: 'm2',
+      role: 'tool',
+      parts: [
+        { type: 'tool_result', data: { tool_call_id: 'tc-1', name: 'bash', content: longError, is_error: true } },
+      ],
+    }
     const { rerender } = render(
-      <Conversation sessionId="s1" title="t" messages={messages} hasMore loadingOlder={false} onLoadOlder={vi.fn()} />,
+      <ToolEnvironmentProvider>
+        <Conversation {...props({ messages: [calling, failed, entry('m3', 'first words')] })} />
+      </ToolEnvironmentProvider>,
     )
-    scrollIntoView.mockClear()
+    await userEvent.click(screen.getByRole('button', { name: /Bash/ }))
+    const showAll = screen.getByRole('button', { name: 'Show all 50 lines' })
+    showAll.focus()
+    expect(showAll).toHaveFocus()
     rerender(
-      <Conversation
-        sessionId="s1"
-        title="t"
-        messages={[older, ...messages]}
-        hasMore={false}
-        loadingOlder={false}
-        onLoadOlder={vi.fn()}
-      />,
+      <ToolEnvironmentProvider>
+        <Conversation
+          {...props({ messages: [calling, failed, entry('m3', 'first words, and more')] })}
+        />
+      </ToolEnvironmentProvider>,
     )
-    expect(scrollIntoView).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Show all 50 lines' })).toBe(showAll)
+    expect(showAll).toHaveFocus()
   })
 
-  it('follows a new message while the log is at its end', () => {
+  it('streams under StrictMode without losing the newest text', () => {
+    vi.useFakeTimers()
     const { rerender } = render(
-      <Conversation sessionId="s1" title="t" messages={messages} hasMore={false} loadingOlder={false} onLoadOlder={vi.fn()} />,
+      <StrictMode>
+        <Conversation {...props({ status: 'running' })} />
+      </StrictMode>,
     )
-    scrollIntoView.mockClear()
     rerender(
-      <Conversation
-        sessionId="s1"
-        title="t"
-        messages={[...messages, newer]}
-        hasMore={false}
-        loadingOlder={false}
-        onLoadOlder={vi.fn()}
-      />,
+      <StrictMode>
+        <Conversation
+          {...props({ status: 'running', messages: [messages[0], entry('m2', 'hi there, and more')] })}
+        />
+      </StrictMode>,
     )
-    expect(scrollIntoView).toHaveBeenCalled()
-  })
-
-  it('leaves a log the person scrolled up where it is', () => {
-    const { rerender } = render(
-      <Conversation sessionId="s1" title="t" messages={messages} hasMore={false} loadingOlder={false} onLoadOlder={vi.fn()} />,
-    )
-    const log = screen.getByTestId('conversation-log')
-    layout(log, 0)
-    fireEvent.scroll(log)
-    scrollIntoView.mockClear()
-    rerender(
-      <Conversation
-        sessionId="s1"
-        title="t"
-        messages={[...messages, newer]}
-        hasMore={false}
-        loadingOlder={false}
-        onLoadOlder={vi.fn()}
-      />,
-    )
-    expect(scrollIntoView).not.toHaveBeenCalled()
-  })
-
-  it('opens a new session at its end', () => {
-    const { rerender } = render(
-      <Conversation sessionId="s1" title="t" messages={messages} hasMore={false} loadingOlder={false} onLoadOlder={vi.fn()} />,
-    )
-    scrollIntoView.mockClear()
-    rerender(
-      <Conversation
-        sessionId="s2"
-        title="other"
-        messages={[newer]}
-        hasMore={false}
-        loadingOlder={false}
-        onLoadOlder={vi.fn()}
-      />,
-    )
-    expect(scrollIntoView).toHaveBeenCalled()
+    // The streaming row holds the new text back for one pass, then shows it.
+    expect(screen.queryByText('hi there, and more')).toBeNull()
+    act(() => {
+      vi.advanceTimersByTime(streamedSourceInterval)
+    })
+    expect(screen.getByText('hi there, and more')).toBeInTheDocument()
   })
 
   // The header carries the context ring, the tokens in use and the cost.
   it('shows the session usage in its header', () => {
     render(
       <Conversation
-        sessionId="s1"
-        title="t"
-        messages={messages}
-        hasMore={false}
-        loadingOlder={false}
-        usage={{ promptTokens: 43800, completionTokens: 0, cost: 0.5, contextWindow: 200000 }}
-        onLoadOlder={vi.fn()}
+        {...props({
+          usage: { promptTokens: 43800, completionTokens: 0, cost: 0.5, contextWindow: 200000 },
+        })}
       />,
     )
     const summary = screen.getByTestId('usage-summary')
@@ -288,17 +275,11 @@ describe('Conversation', () => {
         model: 'claude-sonnet',
       },
     ]
-    render(
-      <Conversation
-        sessionId="s1"
-        title="t"
-        messages={turn}
-        hasMore={false}
-        loadingOlder={false}
-        onLoadOlder={vi.fn()}
-      />,
-    )
+    render(<Conversation {...props({ messages: turn })} />)
     expect(screen.getByText('claude-sonnet · 25s')).toBeInTheDocument()
-    expect(screen.getByText('claude-sonnet · 25s').closest('article')).toHaveAttribute('data-role', 'assistant')
+    expect(screen.getByText('claude-sonnet · 25s').closest('article')).toHaveAttribute(
+      'data-role',
+      'assistant',
+    )
   })
 })

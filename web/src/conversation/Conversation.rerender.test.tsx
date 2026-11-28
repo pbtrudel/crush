@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { WireMessage } from '../store/app'
+import { stubLayout } from '../test/layout'
 import Conversation from './Conversation'
 
 // The tool row stands in for everything a message draws: counting its renders
@@ -72,9 +73,18 @@ function conversation(messages: WireMessage[]) {
   )
 }
 
+// jsdom reports a zero-height log, and the virtualizer renders no row in
+// an empty viewport. The stub gives it one, so every row is in view.
+let restore: () => void = () => undefined
+
 beforeEach(() => {
+  restore = stubLayout({ viewport: 600, row: 60 })
   counters.toolRows = 0
   footerCalls.computed = 0
+})
+
+afterEach(() => {
+  restore()
 })
 
 describe('Conversation re-renders', () => {
