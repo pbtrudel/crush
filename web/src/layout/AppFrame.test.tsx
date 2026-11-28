@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
 import { setMediaQueryMatches } from '../test/mediaQueries'
 import AppFrame from './AppFrame'
 

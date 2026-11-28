@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createAppStore, type AppState, type AppStore } from '../store/app'
 import type { Store } from '../store/store'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from './storage'
 import Alert from './Alert'
 
 function storeWith(sessionId: string, message: string, selected: string | null): Store<AppState> & AppStore {

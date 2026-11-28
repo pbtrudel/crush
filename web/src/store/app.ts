@@ -251,8 +251,11 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
   }
 }
 
+// upsertMessage writes a message by id. The search runs from the end: a log
+// that holds an id twice shows its last copy, so that is the one an update
+// has to reach.
 function upsertMessage(messages: WireMessage[], next: WireMessage): WireMessage[] {
-  const index = messages.findIndex((message) => message.id === next.id)
+  const index = messages.findLastIndex((message) => message.id === next.id)
   if (index < 0) {
     return [...messages, next]
   }

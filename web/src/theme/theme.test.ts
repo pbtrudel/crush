@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
 import { applyTheme, readPreference, resolveTheme, writePreference } from './theme'
 
 describe('resolveTheme', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Bootstrap, ParsedFrame } from '../api/wire'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
 import {
   connectionNotice,
   createAppStore,
@@ -11,6 +11,7 @@ import {
   reduceFrame,
   visibleError,
   wantedSubscriptions,
+  type WireMessage,
 } from './app'
 
 const bootstrap: Bootstrap = {
@@ -82,6 +83,34 @@ describe('reduceFrame', () => {
     )
     expect(second.sessionData.s1.messages).toHaveLength(1)
     expect(second.sessionData.s1.messages[0].updated_at).toBe(9)
+  })
+
+  it('rewrites the last copy of a message the log holds twice', () => {
+    // Older pages are prepended in front of the snapshot, so one id can name
+    // two entries. The upsert has to land on the copy the end of the list
+    // shows, or a streamed update would change a message behind the fold.
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const copy: WireMessage = {
+      id: 'm1',
+      role: 'user',
+      session_id: 's1',
+      parts: [],
+      created_at: 1,
+      updated_at: 1,
+    }
+    const withCopies = {
+      ...start,
+      sessionData: {
+        s1: { messages: [copy, copy], hasMore: false, busy: false, queued: [], files: [], snapshotSeq: 0 },
+      },
+    }
+    const next = reduceFrame(
+      withCopies,
+      frame('message', { type: 'updated', payload: { ...copy, updated_at: 9 } }, 3, 's1'),
+    )
+    expect(next.sessionData.s1.messages).toHaveLength(2)
+    expect(next.sessionData.s1.messages[0].updated_at).toBe(1)
+    expect(next.sessionData.s1.messages[1].updated_at).toBe(9)
   })
 
   it('upserts a session entity and keeps its status', () => {

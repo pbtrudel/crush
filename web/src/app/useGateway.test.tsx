@@ -7,7 +7,7 @@ import { HttpError } from '../api/http'
 import { StreamClient } from '../api/stream'
 import type { SessionRow, SessionStatus } from '../api/wire'
 import { maxSubscriptions } from '../store/app'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from './storage'
 import { useGateway } from './useGateway'
 
 class FakeSocket {

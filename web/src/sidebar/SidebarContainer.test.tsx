@@ -6,7 +6,7 @@ import type { ApiClient } from '../api/http'
 import { HttpError } from '../api/http'
 import { bootstrapSchema, type SessionRow as SessionRowData } from '../api/wire'
 import { createAppStore, type AppState } from '../store/app'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
 import SidebarContainer from './SidebarContainer'
 
 function row(overrides: Partial<SessionRowData> = {}): SessionRowData {
