@@ -1,6 +1,6 @@
 import { z, type ZodTypeAny } from 'zod'
 
-// zod 4 compiles object parsers with new Function unless it is told not
+// zod 4 compiles object parsers with the Function constructor unless told not
 // to, and the gateway's CSP has no 'unsafe-eval': the probe alone reports
 // a CSP violation in the console. jitless parses the same way, without it.
 z.config({ jitless: true })
