@@ -1,4 +1,4 @@
-import { memo, useContext, useMemo } from 'react'
+import { memo, useContext, useId, useMemo, useSyncExternalStore } from 'react'
 
 import type { ToolCallPart, ToolResultPart } from '../chat/parts'
 import type { ToolStatus } from '../chat/toolStatus'
@@ -18,11 +18,15 @@ export interface ToolCallProps {
 
 // ToolCall is one call in the tree. The header is a real button, so the
 // row opens from the keyboard; the body mounts only while it is open.
+// It reads its own open flag from the environment's set, so a toggle
+// re-renders this row and no other.
 function ToolCall({ call, result, status, messageId, depth }: ToolCallProps) {
   const environment = useContext(ToolEnvironmentContext)
   const view = toolView(call.name)
   const input = useMemo(() => parseInput(call.input), [call.input])
-  const open = environment.expanded.has(call.id)
+  const expanded = environment.expanded
+  const open = useSyncExternalStore(expanded.subscribe, () => expanded.has(call.id))
+  const bodyId = useId()
   const summary = view.summary(input, result)
   const Body = view.Body
   return (
@@ -31,6 +35,7 @@ function ToolCall({ call, result, status, messageId, depth }: ToolCallProps) {
         type="button"
         className={styles.header}
         aria-expanded={open}
+        aria-controls={open ? bodyId : undefined}
         onClick={() => environment.toggle(call.id)}
       >
         <span className={styles.title}>{view.title(call.name, environment.mcpServers)}</span>
@@ -38,7 +43,7 @@ function ToolCall({ call, result, status, messageId, depth }: ToolCallProps) {
         <StatusCapsule status={status} />
       </button>
       {open ? (
-        <div className={styles.body}>
+        <div id={bodyId} className={styles.body}>
           <Body call={call} input={input} result={result} status={status} messageId={messageId} depth={depth} />
         </div>
       ) : null}

@@ -34,9 +34,25 @@ export function arrayField(input: ToolInput | null, key: string): unknown[] {
   return Array.isArray(value) ? value : []
 }
 
+// clipLine cuts a line to max columns, ellipsis included. It never keeps
+// half a surrogate pair: that half renders as a replacement glyph.
+function clipLine(line: string, max: number): string {
+  if (line.length <= max) {
+    return line
+  }
+  let end = max - 1
+  const last = line.charCodeAt(end - 1)
+  if (last >= 0xd800 && last <= 0xdbff) {
+    end -= 1
+  }
+  return `${line.slice(0, end)}…`
+}
+
 export function firstLine(value: string, max = 80): string {
-  const line = value.trim().split('\n')[0] ?? ''
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+  // The line break of a CRLF pair stays on the first line after the split,
+  // and a summary never shows it.
+  const line = (value.trim().split('\n')[0] ?? '').replace(/\r$/, '')
+  return clipLine(line, max)
 }
 
 // compactInput is the summary of a call no view knows: its first string

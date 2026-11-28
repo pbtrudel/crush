@@ -29,6 +29,14 @@ describe('firstLine and compactInput', () => {
     expect(firstLine('x'.repeat(100), 10)).toBe('xxxxxxxxx…')
   })
 
+  it('drops a trailing carriage return', () => {
+    expect(firstLine('go test\r\n./...')).toBe('go test')
+  })
+
+  it('never splits a surrogate pair', () => {
+    expect(firstLine(`${'a'.repeat(8)}😀b`, 10)).toBe('aaaaaaaa…')
+  })
+
   it('summarises an input by its first string field', () => {
     expect(compactInput({ query: 'parser bug', limit: 3 })).toBe('parser bug')
     expect(compactInput({ limit: 3 })).toBe('{"limit":3}')

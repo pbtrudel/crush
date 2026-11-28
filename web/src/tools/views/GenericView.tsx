@@ -6,11 +6,18 @@ function GenericBody({ call, input, result }: ToolBodyProps) {
   return (
     <>
       <ToolSection label="Input">
-        <OutputBlock text={input === null ? call.input : JSON.stringify(input, null, 2)} />
+        <OutputBlock
+          text={input === null ? call.input : JSON.stringify(input, null, 2)}
+          revealKey={`${call.id}:input`}
+        />
       </ToolSection>
       {result ? (
         <ToolSection label={result.isError ? 'Error' : 'Output'}>
-          <OutputBlock text={result.content} tone={result.isError ? 'error' : 'plain'} />
+          <OutputBlock
+            text={result.content}
+            tone={result.isError ? 'error' : 'plain'}
+            revealKey={`${call.id}:output`}
+          />
         </ToolSection>
       ) : null}
     </>
