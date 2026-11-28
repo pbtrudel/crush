@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { WireMessage } from '../api/wire'
 import { finishOf, messageParts, parsePart, resultIndex, resultSignature } from './parts'
@@ -101,5 +101,31 @@ describe('resultIndex', () => {
     const one = [message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'ok' } }], 't1')]
     const two = [message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'no' } }], 't1')]
     expect(resultSignature(two)).not.toBe(resultSignature(one))
+  })
+
+  // The signature runs on every frame, and the log holds every result loaded
+  // so far. Hashing is the expensive part, so each message object's fragment
+  // is kept: a streamed token makes one new object, and only that object is
+  // hashed again.
+  it('hashes each message object once, and only the object that changed', () => {
+    const charCodeAt = vi.spyOn(String.prototype, 'charCodeAt')
+    try {
+      const unchanged = [
+        message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'ok' } }], 't1'),
+        message([{ type: 'text', data: { text: 'same' } }], 'a1'),
+      ]
+      const before = resultSignature(unchanged)
+      const hashed = charCodeAt.mock.calls.length
+      expect(hashed).toBeGreaterThan(0)
+
+      expect(resultSignature(unchanged)).toBe(before)
+      expect(charCodeAt.mock.calls.length).toBe(hashed)
+
+      const rewritten = message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'no' } }], 't1')
+      expect(resultSignature([rewritten, unchanged[1]])).not.toBe(before)
+      expect(charCodeAt.mock.calls.length).toBeGreaterThan(hashed)
+    } finally {
+      charCodeAt.mockRestore()
+    }
   })
 })

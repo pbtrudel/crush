@@ -260,25 +260,50 @@ export function resultIndex(messages: WireMessage[]): Map<string, ToolResultPart
   return out
 }
 
+// resultCache keeps one message's signature fragment per message object. A
+// streamed token makes a new message object, so a stale fragment can never be
+// read, and every other message in the log keeps the one it already had.
+const resultCache = new WeakMap<WireMessage, string>()
+
+// resultFragment hashes the results of one message. The content and the
+// metadata are hashed rather than measured: a result rewritten at the same
+// length still changes the key, and comparing two short digests stays cheap
+// where a tool prints a whole file.
+function resultFragment(message: WireMessage): string {
+  const cached = resultCache.get(message)
+  if (cached !== undefined) {
+    return cached
+  }
+  const keys: string[] = []
+  for (const part of messageParts(message)) {
+    if (part.kind === 'tool_result') {
+      const result = part.result
+      keys.push(
+        `${result.toolCallId}:${result.isError ? 1 : 0}:${digest(result.content)}:${digest(result.metadata)}`,
+      )
+    }
+  }
+  const fragment = keys.join(',')
+  resultCache.set(message, fragment)
+  return fragment
+}
+
 // resultSignature changes when a result is added, removed or rewritten. A
 // view memoises the index on it, so a streamed token, which touches no
 // result, keeps the index's identity and the memoised messages with it.
-// The content and the metadata are hashed rather than measured: a result
-// rewritten at the same length still changes the key, and comparing two
-// short digests stays cheap where a tool prints a whole file.
+// Only a message object the tab has not seen is hashed: the log holds every
+// result loaded so far, and a frame must not re-read them all.
 export function resultSignature(messages: WireMessage[]): string {
-  const keys: string[] = []
+  const fragments: string[] = []
   for (const message of messages) {
-    for (const part of messageParts(message)) {
-      if (part.kind === 'tool_result') {
-        const result = part.result
-        keys.push(
-          `${result.toolCallId}:${result.isError ? 1 : 0}:${digest(result.content)}:${digest(result.metadata)}`,
-        )
-      }
+    const fragment = resultFragment(message)
+    // An empty message adds no keys, and the joined signature is the same
+    // whether it is skipped here or contributed nothing.
+    if (fragment !== '') {
+      fragments.push(fragment)
     }
   }
-  return keys.join(',')
+  return fragments.join(',')
 }
 
 // digest is FNV-1a over the string's UTF-16 code units, in base 36. A
