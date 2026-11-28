@@ -16,7 +16,7 @@ func TestSeedM1GivesTheShellEveryMarker(t *testing.T) {
 	t.Parallel()
 	f := NewFake()
 	clock := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
-	require.NoError(t, SeedM1(f, clock))
+	SeedM1(f, clock)
 
 	sessions, err := f.ListSessions(context.Background())
 	require.NoError(t, err)

@@ -86,10 +86,7 @@ func main() {
 	// one idle.
 	m1 := os.Getenv("WEBFAKE_SCENARIO") == "m1"
 	if m1 {
-		if err := webtest.SeedM1(fake, clock); err != nil {
-			fmt.Fprintln(os.Stderr, "webfake:", err)
-			os.Exit(1)
-		}
+		webtest.SeedM1(fake, clock)
 	}
 	// webfake has no TUI, so it plays the terminal's part for mode switches:
 	// the request comes back through the channel and the fake applies it.
