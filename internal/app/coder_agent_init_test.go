@@ -48,9 +48,10 @@ func (c *initFakeCoordinator) GenerateTitle(context.Context, string, string) {
 func (c *initFakeCoordinator) ListSettledMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
-func (c *initFakeCoordinator) AddNote(string, string)           {}
-func (c *initFakeCoordinator) SetHostContext(proto.HostContext) {}
-func (c *initFakeCoordinator) HostContext() proto.HostContext   { return proto.HostContext{} }
+func (c *initFakeCoordinator) SettleSession(context.Context, string) error { return nil }
+func (c *initFakeCoordinator) AddNote(string, string)                      {}
+func (c *initFakeCoordinator) SetHostContext(proto.HostContext)            {}
+func (c *initFakeCoordinator) HostContext() proto.HostContext              { return proto.HostContext{} }
 
 // TestInitCoderAgentCreateOnly: once a coordinator exists, a second
 // initialization (headless or interactive) is a no-op, so a channel push

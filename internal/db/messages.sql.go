@@ -476,6 +476,59 @@ func (q *Queries) ListMessagesPageBefore(ctx context.Context, arg ListMessagesPa
 	return items, nil
 }
 
+const listUnsettledMessages = `-- name: ListUnsettledMessages :many
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, prism_model_id, prism_model_name, prism_hypercredit_savings, prism_dollar_savings, model_name
+FROM messages
+WHERE session_id = ?
+  AND ((role = 'assistant' AND is_summary_message = 0 AND finished_at IS NULL)
+    OR role = 'tool')
+ORDER BY created_at ASC, rowid ASC
+`
+
+// What a settle pass needs, and nothing else: the assistant rows that never
+// finished, and every tool result that could already answer one of their
+// calls. finished_at is written from the message's finish part, so a NULL
+// means the turn never ended. Reading only these rows keeps settling a
+// session off the whole transcript.
+func (q *Queries) ListUnsettledMessages(ctx context.Context, sessionID string) ([]Message, error) {
+	rows, err := q.query(ctx, q.listUnsettledMessagesStmt, listUnsettledMessages, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
+			&i.PrismModelID,
+			&i.PrismModelName,
+			&i.PrismHypercreditSavings,
+			&i.PrismDollarSavings,
+			&i.ModelName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserMessagesBySession = `-- name: ListUserMessagesBySession :many
 SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, prism_model_id, prism_model_name, prism_hypercredit_savings, prism_dollar_savings, model_name
 FROM messages

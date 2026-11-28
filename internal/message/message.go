@@ -70,6 +70,11 @@ type Service interface {
 	// be a message of this session, or [ErrUnknownMessage]. The bool
 	// reports whether older messages remain.
 	PageMessages(ctx context.Context, sessionID, before string, limit int) ([]Message, bool, error)
+	// ListUnsettled returns what a settle pass needs for a session with
+	// nothing running in it: the assistant messages that never finished,
+	// and the tool results that answer their calls. It reads only those
+	// rows, never the whole transcript.
+	ListUnsettled(ctx context.Context, sessionID string) ([]Message, error)
 	GetLastAssistantMessage(ctx context.Context, sessionID string) (Message, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
@@ -621,6 +626,25 @@ func (s *service) PageMessages(ctx context.Context, sessionID, before string, li
 		}
 	}
 	return messages, hasMore, nil
+}
+
+// ListUnsettled reads the rows a settle pass repairs. finished_at is written
+// from a message's finish part when a turn ends, so an unfinished assistant
+// message is one that never got there; the tool rows come along so a call
+// that already has a result is not answered twice.
+func (s *service) ListUnsettled(ctx context.Context, sessionID string) ([]Message, error) {
+	dbMessages, err := s.q.ListUnsettledMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]Message, len(dbMessages))
+	for i, dbMessage := range dbMessages {
+		messages[i], err = s.fromDBItem(dbMessage)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
 }
 
 // checkPageAnchor reports [ErrUnknownMessage] unless before names a message

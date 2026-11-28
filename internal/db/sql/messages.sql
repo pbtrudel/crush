@@ -120,3 +120,16 @@ WHERE m.session_id = ?
   AND (m.created_at, m.rowid) < (SELECT b.created_at, b.rowid FROM messages b WHERE b.id = ?)
 ORDER BY m.created_at DESC, m.rowid DESC
 LIMIT ?;
+
+-- name: ListUnsettledMessages :many
+-- What a settle pass needs, and nothing else: the assistant rows that never
+-- finished, and every tool result that could already answer one of their
+-- calls. finished_at is written from the message's finish part, so a NULL
+-- means the turn never ended. Reading only these rows keeps settling a
+-- session off the whole transcript.
+SELECT *
+FROM messages
+WHERE session_id = ?
+  AND ((role = 'assistant' AND is_summary_message = 0 AND finished_at IS NULL)
+    OR role = 'tool')
+ORDER BY created_at ASC, rowid ASC;

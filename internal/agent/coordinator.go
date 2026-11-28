@@ -132,6 +132,10 @@ type Coordinator interface {
 	// ListSettledMessages reads a session's transcript, first settling any
 	// tool calls a dead process left without a reply.
 	ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error)
+	// SettleSession repairs the tool calls a dead process left without a
+	// reply in a session with nothing running in it, so a reader that pages
+	// the store never shows a call stuck in flight.
+	SettleSession(ctx context.Context, sessionID string) error
 	QueuedPrompts(sessionID string) int
 	QueuedPromptsList(sessionID string) []string
 	ClearQueue(sessionID string)

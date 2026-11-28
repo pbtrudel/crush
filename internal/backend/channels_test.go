@@ -348,3 +348,4 @@ func TestRouteChannelMessage_ConfigEnabled(t *testing.T) {
 func (*recordingCoordinator) ListSettledMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
+func (*recordingCoordinator) SettleSession(context.Context, string) error { return nil }

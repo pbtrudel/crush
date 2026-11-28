@@ -53,6 +53,8 @@ func (c *settlingCoordinator) ListSettledMessages(_ context.Context, sessionID s
 	return c.msgs, nil
 }
 
+func (*settlingCoordinator) SettleSession(context.Context, string) error { return nil }
+
 // Every remote client reads its transcript through the backend, so the read
 // must go through the agent, which owns settling interrupted calls.
 func TestListSessionMessages_ReadsThroughAgent(t *testing.T) {

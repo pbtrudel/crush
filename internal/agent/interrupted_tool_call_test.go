@@ -457,3 +457,91 @@ func TestListSettledMessages_ConcurrentReadersSettleOnce(t *testing.T) {
 	}
 	require.Equal(t, 1, results, "the orphan must be settled exactly once")
 }
+
+// TestSettleSession_RepairsAnIdleTranscript pins what paging a session needs:
+// the web gateway reads pages of the store, so the settle has to happen
+// before the page is read, not on the way through it.
+func TestSettleSession_RepairsAnIdleTranscript(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, assistant := killedTurn(t, env, true)
+	c := settlingCoordinator(env)
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	var results []message.ToolResult
+	for _, m := range stored {
+		results = append(results, m.ToolResults()...)
+	}
+	require.Len(t, results, 1, "an idle session is settled before it is paged")
+	require.Equal(t, interruptedToolCallResult, results[0].Content)
+	require.True(t, results[0].IsError)
+
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	require.True(t, reloaded.ToolCalls()[0].Finished)
+}
+
+// A live run's unanswered call is not an orphan, so settling leaves it and
+// the pager's page shows it exactly as stored.
+func TestSettleSession_LeavesABusySessionAlone(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, assistant := killedTurn(t, env, true)
+	c := settlingCoordinator(env)
+	c.mainAgent.(*sessionAgent).activeRequests.Set(sess.ID, &activeCancel{cancel: func() {}})
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	for _, m := range stored {
+		require.Empty(t, m.ToolResults(), "a busy session is paged without a repair")
+	}
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	require.False(t, reloaded.IsFinished(), "a live run's turn is not finished by settling")
+}
+
+// A call that already has its result must not gain a second one: only the
+// rows settling needs are read, and the results are read with them.
+func TestSettleSession_DoesNotAnswerAnAnsweredCall(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, _ := env.sessions.Create(ctx, "answered")
+	_, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_a", Name: "bash", Input: "{}", Finished: true},
+			message.ToolCall{ID: "call_b", Name: "view", Input: "{}", Finished: true},
+		},
+	})
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.Tool,
+		Parts: []message.ContentPart{message.ToolResult{ToolCallID: "call_a", Name: "bash", Content: "done"}},
+	})
+	require.NoError(t, err)
+
+	c := settlingCoordinator(env)
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	var results []message.ToolResult
+	for _, m := range stored {
+		results = append(results, m.ToolResults()...)
+	}
+	require.Len(t, results, 2, "each call ends with exactly one result")
+	byCall := map[string]string{}
+	for _, tr := range results {
+		byCall[tr.ToolCallID] = tr.Content
+	}
+	require.Equal(t, "done", byCall["call_a"], "the stored result is left alone")
+	require.Equal(t, interruptedToolCallResult, byCall["call_b"])
+}

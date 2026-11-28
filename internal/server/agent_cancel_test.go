@@ -243,3 +243,4 @@ func TestPostAgent_DetachesRequestContext(t *testing.T) {
 func (*runCoordinator) ListSettledMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
+func (*runCoordinator) SettleSession(context.Context, string) error { return nil }

@@ -1184,12 +1184,14 @@ func (f *Fake) ListMessages(ctx context.Context, id string) ([]message.Message, 
 // ListMessagesPage answers one page of a session's transcript the way the
 // real store does: the page that ends just before before, oldest first, and
 // whether older messages remain. message.ErrUnknownMessage reports a before
-// id the session does not have.
+// id the session does not have. Like the real workspace, it settles the
+// transcript first unless a run owns the session.
 func (f *Fake) ListMessagesPage(ctx context.Context, id, before string, limit int) ([]message.Message, bool, error) {
 	f.mu.Lock()
 	f.listMessagesPageCalls++
 	gate := f.listMessagesGate
 	f.listMessagesGate = nil
+	f.settleLocked(id)
 	messages := append([]message.Message(nil), f.messages[id]...)
 	f.mu.Unlock()
 	if gate != nil {
@@ -1216,6 +1218,61 @@ func (f *Fake) ListMessagesPage(ctx context.Context, id, before string, limit in
 	}
 	start := max(0, end-limit)
 	return messages[start:end], start > 0, nil
+}
+
+// settleLocked repairs what a killed process leaves behind the way the real
+// workspace does before paging: a tool call with no result gets an
+// interrupted one and its turn is finished. A busy session is left alone,
+// because an unanswered call there belongs to a live run. The caller holds
+// f.mu.
+func (f *Fake) settleLocked(id string) {
+	if f.busy[id] {
+		return
+	}
+	msgs := f.messages[id]
+	answered := make(map[string]bool)
+	for _, m := range msgs {
+		for _, tr := range m.ToolResults() {
+			answered[tr.ToolCallID] = true
+		}
+	}
+	var settled []message.Message
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role != message.Assistant {
+			continue
+		}
+		open := make([]message.ToolCall, 0, len(m.ToolCalls()))
+		for _, tc := range m.ToolCalls() {
+			if !tc.ProviderExecuted && !answered[tc.ID] {
+				open = append(open, tc)
+			}
+		}
+		if len(open) == 0 {
+			continue
+		}
+		if !m.IsFinished() {
+			m.AddFinishAt(message.FinishReasonError, "Interrupted", "", m.UpdatedAt)
+		}
+		for _, tc := range open {
+			if !tc.Finished {
+				tc.Finished = true
+				m.AddToolCall(tc)
+			}
+			settled = append(settled, message.Message{
+				SessionID: id, Role: message.Tool,
+				Parts: []message.ContentPart{message.ToolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+					Content:    "tool call was interrupted and did not produce a result, you may retry this call if the result is still needed",
+					IsError:    true,
+				}},
+			})
+		}
+	}
+	if len(settled) > 0 {
+		f.messages[id] = append(msgs, settled...)
+	}
 }
 
 // ListMessagesCalls reports how many full-transcript reads the gateway made.

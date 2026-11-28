@@ -207,10 +207,11 @@ func pageMessages(msgs []message.Message, before string, limit int) ([]message.M
 }
 
 // messagePager is the optional workspace capability the paging paths use: one
-// page of a session's transcript read straight from the store, so a long
-// session is never loaded whole. The in-process workspace implements it; a
-// client/server workspace does not, and the gateway reads the whole session
-// there as it always has.
+// page of a session's transcript, read straight from the store so a long
+// session is never loaded whole, and settled first so a call a dead process
+// left open is never paged back as still running. The in-process workspace
+// implements it; a client/server workspace does not, and the gateway reads the
+// whole session there as it always has.
 type messagePager interface {
 	ListMessagesPage(ctx context.Context, sessionID, before string, limit int) ([]message.Message, bool, error)
 }
@@ -219,12 +220,12 @@ type messagePager interface {
 // serves the session the terminal already owns.
 var _ messagePager = (*workspace.AppWorkspace)(nil)
 
-// messagePage reads one page of a session's messages. A busy session keeps
-// the settled full read: settling exists to repair the tool calls an
-// interrupted run left behind, and it needs the whole transcript. An idle
-// session has nothing to repair, so its page comes from the store.
+// messagePage reads one page of a session's messages. The paging workspace
+// settles and pages in one call, so the gateway has no busy branch of its own:
+// settling leaves a live run's calls alone, and paging one is exactly what a
+// busy session should get.
 func (g *Gateway) messagePage(ctx context.Context, sessionID, before string, limit int) ([]message.Message, bool, error) {
-	if pager, ok := g.ws.(messagePager); ok && !g.ws.AgentIsSessionBusy(sessionID) {
+	if pager, ok := g.ws.(messagePager); ok {
 		page, hasMore, err := pager.ListMessagesPage(ctx, sessionID, before, limit)
 		if errors.Is(err, message.ErrUnknownMessage) {
 			// The handler answers the same unknown_message it always has.

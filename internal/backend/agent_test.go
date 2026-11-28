@@ -240,3 +240,4 @@ func TestSetMainAgent_PropagatesCoordinatorError(t *testing.T) {
 func (*blockingCoordinator) ListSettledMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
+func (*blockingCoordinator) SettleSession(context.Context, string) error { return nil }

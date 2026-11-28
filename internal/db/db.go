@@ -180,6 +180,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listSkillsEnabledStmt, err = db.PrepareContext(ctx, listSkillsEnabled); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSkillsEnabled: %w", err)
 	}
+	if q.listUnsettledMessagesStmt, err = db.PrepareContext(ctx, listUnsettledMessages); err != nil {
+		return nil, fmt.Errorf("error preparing query ListUnsettledMessages: %w", err)
+	}
 	if q.listUserMessagesBySessionStmt, err = db.PrepareContext(ctx, listUserMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListUserMessagesBySession: %w", err)
 	}
@@ -472,6 +475,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listSkillsEnabledStmt: %w", cerr)
 		}
 	}
+	if q.listUnsettledMessagesStmt != nil {
+		if cerr := q.listUnsettledMessagesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listUnsettledMessagesStmt: %w", cerr)
+		}
+	}
 	if q.listUserMessagesBySessionStmt != nil {
 		if cerr := q.listUserMessagesBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listUserMessagesBySessionStmt: %w", cerr)
@@ -608,6 +616,7 @@ type Queries struct {
 	listSessionsStmt                     *sql.Stmt
 	listSkillsDisabledStmt               *sql.Stmt
 	listSkillsEnabledStmt                *sql.Stmt
+	listUnsettledMessagesStmt            *sql.Stmt
 	listUserMessagesBySessionStmt        *sql.Stmt
 	recordFileReadStmt                   *sql.Stmt
 	renameSessionStmt                    *sql.Stmt
@@ -675,6 +684,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listSessionsStmt:                     q.listSessionsStmt,
 		listSkillsDisabledStmt:               q.listSkillsDisabledStmt,
 		listSkillsEnabledStmt:                q.listSkillsEnabledStmt,
+		listUnsettledMessagesStmt:            q.listUnsettledMessagesStmt,
 		listUserMessagesBySessionStmt:        q.listUserMessagesBySessionStmt,
 		recordFileReadStmt:                   q.recordFileReadStmt,
 		renameSessionStmt:                    q.renameSessionStmt,

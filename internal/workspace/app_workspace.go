@@ -116,11 +116,20 @@ func (w *AppWorkspace) ListMessages(ctx context.Context, sessionID string) ([]me
 // ListMessagesPage reads one page of a session's transcript straight from the
 // message store, so a long session is never loaded whole. It is deliberately
 // not part of [Workspace]: a client/server workspace has no such call, and the
-// gateway falls back to ListMessages there. The gateway calls it only for a
-// session that is not busy, which is exactly when there is no in-flight tool
-// call for the settled read to repair.
+// gateway falls back to ListMessages there.
+//
+// Paging means reading the store rather than ListSettledMessages, so the
+// settle has to happen first: without it a session a killed process left
+// mid-tool-call would page back a call stuck on "running" forever. Settling
+// the session is what writes the interrupted results the page then carries.
 func (w *AppWorkspace) ListMessagesPage(ctx context.Context, sessionID, before string, limit int) ([]message.Message, bool, error) {
-	if err := w.app.Messages.FlushAll(ctx); err != nil {
+	if coord := w.app.Agent(); coord != nil {
+		if err := coord.SettleSession(ctx, sessionID); err != nil {
+			return nil, false, err
+		}
+	} else if err := w.app.Messages.FlushAll(ctx); err != nil {
+		// No agent means nothing can be settling; the page still has to see
+		// the writes a debounced update left pending.
 		return nil, false, err
 	}
 	return w.app.Messages.PageMessages(ctx, sessionID, before, limit)

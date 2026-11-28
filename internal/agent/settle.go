@@ -194,6 +194,44 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 	return append(msgs, repaired...), nil
 }
 
+// SettleSession repairs what a dead process left behind in a session with
+// nothing running in it. It is ListSettledMessages for a reader that pages
+// the store instead of loading the whole transcript: it reads only the
+// unfinished assistant messages and the tool results that could answer them,
+// and hands those to the same repair. busy reports whether a run owns the
+// session, and is sampled on both sides of the read, since a run that starts
+// during it owns the calls the rows still look open on.
+func SettleSession(ctx context.Context, messages message.Service, busy func(sessionID string) bool, sessionID string) error {
+	if err := messages.FlushAll(ctx); err != nil {
+		return err
+	}
+	if busy(sessionID) {
+		return nil
+	}
+	msgs, err := messages.ListUnsettled(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(msgs) == 0 || busy(sessionID) {
+		return nil
+	}
+	if _, err := repairInterruptedToolCalls(ctx, messages, msgs); err != nil {
+		// A page of unsettled rows is still better than no page; the next
+		// reader settles again.
+		slog.Warn("Failed to settle interrupted tool calls",
+			"session_id", sessionID, "error", err)
+	}
+	return nil
+}
+
+// SettleSession repairs the session's dangling tool calls under the settle
+// lock, so a paged read cannot settle the same call twice.
+func (c *coordinator) SettleSession(ctx context.Context, sessionID string) error {
+	c.settleMu.Lock()
+	defer c.settleMu.Unlock()
+	return SettleSession(ctx, c.messages, c.IsSessionBusy, sessionID)
+}
+
 // ListSettledMessages returns a session's transcript with calls a dead
 // process left dangling already settled. Readers are serialized so two
 // cannot settle the same call twice. Busy is sampled on both sides of the
