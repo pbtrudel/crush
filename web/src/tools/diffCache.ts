@@ -47,8 +47,9 @@ function samePairs(a: readonly DiffPair[], b: readonly DiffPair[]): boolean {
   return a.length === b.length && a.every((pair, index) => samePair(pair, b[index]))
 }
 
-// createDiffCache builds one cache, so its lifetime is the provider's: the
-// answers live as long as the session they were computed for.
+// createDiffCache builds one session's cache. The provider makes a new one
+// when the selected session changes, so an answer never outlives the
+// session it was computed for.
 export function createDiffCache(limit = maxCachedDiffs): DiffCache {
   const cache = new Map<string, CachedDiff>()
   return {

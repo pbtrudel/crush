@@ -1,8 +1,15 @@
-import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual'
+import {
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+} from 'react'
 
 import type { SessionStatus } from '../api/wire'
-import MessageView from '../chat/MessageView'
+import MessageView, { drawsNothing } from '../chat/MessageView'
 import { isTurnActive } from '../chat/toolStatus'
 import { turnFooters } from '../chat/turns'
 import { useResults } from '../chat/useResults'
@@ -101,20 +108,51 @@ function Log({
   // One footer per assistant message that ends a turn, rebuilt only when
   // the log changes: every settled message gets the same string it had.
   const footers = useMemo(() => turnFooters(messages), [messages])
-  const keys = useMemo(() => messages.map((entry) => entry.id), [messages])
+  // Only messages that draw something become rows: results belong to their
+  // call, hidden text and a plain finish draw nothing, and an empty row
+  // would still cost eight pixels and a message's height estimate.
+  const drawn = useMemo(() => messages.filter((entry) => !drawsNothing(entry)), [messages])
+  const keys = useMemo(() => drawn.map((entry) => entry.id), [drawn])
   // Only the turn after the last user message can still be running.
-  const lastUser = messages.findLastIndex((entry) => entry.role === 'user')
+  const lastUser = drawn.findLastIndex((entry) => entry.role === 'user')
   const live = isTurnActive(status)
 
+  // focusedRow is the data-index of the row that holds the focus. React's
+  // onFocus/onBlur are focusin/focusout and bubble from a row's control to
+  // the log. The virtualizer unmounts rows outside its window, which would
+  // take the reader's focus with them; the range extractor keeps this one.
+  const focusedRow = useRef<number | null>(null)
+
+  const trackFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    const target = event.target
+    const row = target instanceof HTMLElement ? target.closest<HTMLElement>('[data-index]') : null
+    const index = row?.dataset.index
+    focusedRow.current = index === undefined ? null : Number(index)
+  }, [])
+
+  const trackBlur = useCallback(() => {
+    focusedRow.current = null
+  }, [])
+
+  const rangeExtractor = useCallback((range: Range) => {
+    const indexes = defaultRangeExtractor(range)
+    const focused = focusedRow.current
+    if (focused === null || focused < 0 || focused >= range.count || indexes.includes(focused)) {
+      return indexes
+    }
+    // Sorted and unique: the virtualizer reads rows back by position.
+    const merged = [...indexes, focused]
+    merged.sort((a, b) => a - b)
+    return merged
+  }, [])
+
   const virtualizer = useVirtualizer({
-    count: messages.length + 1,
+    count: drawn.length + 1,
     getScrollElement: () => log.current,
     estimateSize: () => estimatedRowHeight,
     overscan: 6,
     getItemKey: (index) => (index === 0 ? edgeKey : (keys[index - 1] ?? index)),
-    // A measurement re-renders on the next frame instead of inside the
-    // commit that measured it, which React warns about.
-    useFlushSync: false,
+    rangeExtractor,
   })
 
   // Every commit: follow the end while pinned, or keep the old first
@@ -162,6 +200,9 @@ function Log({
     if (element === null) {
       return
     }
+    // The button goes away once the view is back at the end; take the
+    // focus first, so it lands on the log instead of the body.
+    element.focus({ preventScroll: true })
     pinned.current = true
     setAway(false)
     element.scrollTop = element.scrollHeight
@@ -183,13 +224,18 @@ function Log({
           // The log is a reading surface: announcing every streamed delta
           // would talk over the reader instead of saying something new.
           aria-live="off"
+          // Programmatically focusable, so Back to bottom can hand it the
+          // focus before the button disappears.
+          tabIndex={-1}
+          onFocus={trackFocus}
+          onBlur={trackBlur}
           onScroll={trackScroll}
         >
           {/* The spacer's height and each row's offset are geometry the
               virtualizer computes; React writes them through the CSSOM. */}
           <div className={styles.spacer} style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((item) => {
-              const message = item.index === 0 ? undefined : messages[item.index - 1]
+              const message = item.index === 0 ? undefined : drawn[item.index - 1]
               return (
                 <div
                   key={item.key}

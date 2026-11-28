@@ -30,8 +30,8 @@ export interface ToolEnvironment {
   // revealed holds the output blocks the person asked to see whole, by
   // block key, so a revealed result survives a remount too.
   revealed: IdSet
-  // diffs keeps each edit's diff by call id, so a row the log unmounts and
-  // mounts again does not run jsdiff a second time.
+  // diffs keeps each edit's diff by call id for the session on screen, so a
+  // row the log unmounts and mounts again does not run jsdiff a second time.
   diffs: DiffCache
   toggle(callId: string): void
   reveal(key: string): void
@@ -98,6 +98,10 @@ export interface ToolEnvironmentProviderProps {
   mcpServers?: readonly string[]
   store?: ChatStore | null
   renderTranscript?: RenderTranscript | null
+  // sessionId scopes the per-session state: a new session starts with an
+  // empty diff cache, so no answer outlives the session it was computed
+  // for.
+  sessionId?: string | null
   children: ReactNode
 }
 
@@ -114,13 +118,15 @@ export function ToolEnvironmentProvider({
   mcpServers = noServers,
   store = null,
   renderTranscript = null,
+  sessionId = null,
   children,
 }: ToolEnvironmentProviderProps) {
   const [sets] = useState(() => ({
     expanded: createIdSet(),
     revealed: createIdSet(),
-    diffs: createDiffCache(),
   }))
+  // A session switch drops the old cache with the render that replaced it.
+  const diffs = useMemo(() => createDiffCache(), [sessionId])
   const value = useMemo(
     () => ({
       mcpServers,
@@ -128,11 +134,11 @@ export function ToolEnvironmentProvider({
       renderTranscript,
       expanded: sets.expanded,
       revealed: sets.revealed,
-      diffs: sets.diffs,
+      diffs,
       toggle: sets.expanded.toggle,
       reveal: sets.revealed.toggle,
     }),
-    [mcpServers, store, renderTranscript, sets],
+    [mcpServers, store, renderTranscript, sets, diffs],
   )
   return <ToolEnvironmentContext.Provider value={value}>{children}</ToolEnvironmentContext.Provider>
 }

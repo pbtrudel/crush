@@ -98,7 +98,12 @@ function SessionConversation({ sessionId, title, client, store }: SessionConvers
   // keeps its identity between renders and a streamed delta re-renders no
   // tool row but the one it changed.
   return (
-    <ToolEnvironmentProvider mcpServers={mcpServers} store={store} renderTranscript={renderTranscript}>
+    <ToolEnvironmentProvider
+      sessionId={sessionId}
+      mcpServers={mcpServers}
+      store={store}
+      renderTranscript={renderTranscript}
+    >
       <Conversation
         sessionId={sessionId}
         title={title}

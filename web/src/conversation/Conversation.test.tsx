@@ -153,6 +153,33 @@ describe('Conversation', () => {
     expect(log.scrollTop).toBe(1060)
   })
 
+  it('anchors a prepend past a message that draws nothing', () => {
+    vi.useFakeTimers()
+    const resultOnly: WireMessage = {
+      id: 'r1',
+      role: 'tool',
+      session_id: 's1',
+      parts: [{ type: 'tool_result', data: { tool_call_id: 'tc-1', name: 'bash', content: 'ok' } }],
+      created_at: 1,
+      updated_at: 1,
+    }
+    const { rerender } = render(<Conversation {...props({ messages: [messages[0]], hasMore: true })} />)
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 1000, scrollHeight: 5000, clientHeight: 600 })
+    fireEvent.scroll(log)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    // The page holds a message that draws nothing; the rows the log keeps
+    // still start with the old first message.
+    rerender(
+      <Conversation
+        {...props({ messages: [entry('m0', 'first words', 'user'), resultOnly, messages[0]], hasMore: false })}
+      />,
+    )
+    expect(log.scrollTop).toBe(1060)
+  })
+
   it('marks a tool call done from a result in a later message', () => {
     render(
       <Conversation
@@ -221,6 +248,82 @@ describe('Conversation', () => {
     )
     expect(screen.getByRole('button', { name: 'Show all 50 lines' })).toBe(showAll)
     expect(showAll).toHaveFocus()
+  })
+
+  it('keeps the focused row mounted when following new messages past the window', async () => {
+    const longError = Array.from({ length: 50 }, (_, index) => `error ${index + 1}`).join('\n')
+    const calling: WireMessage = {
+      ...messages[1],
+      id: 'm1',
+      parts: [{ type: 'tool_call', data: { id: 'tc-1', name: 'bash', input: '{"command":"ls"}', finished: true } }],
+    }
+    const failed: WireMessage = {
+      ...messages[0],
+      id: 'm2',
+      role: 'tool',
+      parts: [
+        { type: 'tool_result', data: { tool_call_id: 'tc-1', name: 'bash', content: longError, is_error: true } },
+      ],
+    }
+    const later = Array.from({ length: 40 }, (_, index) => entry(`later-${index}`, `reply ${index}`))
+    const { rerender } = render(
+      <ToolEnvironmentProvider>
+        <Conversation {...props({ messages: [calling, failed] })} />
+      </ToolEnvironmentProvider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /Bash/ }))
+    const showAll = screen.getByRole('button', { name: 'Show all 50 lines' })
+    showAll.focus()
+    expect(showAll).toHaveFocus()
+
+    rerender(
+      <ToolEnvironmentProvider>
+        <Conversation {...props({ messages: [calling, failed, ...later] })} />
+      </ToolEnvironmentProvider>,
+    )
+    // The log follows to the end, far past the focused row's window.
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 1920, scrollHeight: 2520, clientHeight: 600 })
+    fireEvent.scroll(log)
+    expect(screen.getByRole('button', { name: 'Show all 50 lines' })).toBe(showAll)
+    expect(showAll).toHaveFocus()
+  })
+
+  it('moves the focus to the log when Back to bottom is pressed from the keyboard', async () => {
+    render(<Conversation {...props()} />)
+    const log = screen.getByTestId('conversation-log')
+    scrollState(log, { scrollTop: 1000, scrollHeight: 5000, clientHeight: 600 })
+    fireEvent.scroll(log)
+    const back = screen.getByRole('button', { name: 'Back to bottom' })
+    back.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(screen.queryByRole('button', { name: 'Back to bottom' })).toBeNull()
+    expect(log).toHaveFocus()
+  })
+
+  it('gives a message that draws nothing no row', () => {
+    const resultOnly: WireMessage = {
+      id: 'r1',
+      role: 'tool',
+      session_id: 's1',
+      parts: [{ type: 'tool_result', data: { tool_call_id: 'tc-1', name: 'bash', content: 'ok' } }],
+      created_at: 1,
+      updated_at: 1,
+    }
+    const hiddenOnly: WireMessage = {
+      id: 'h1',
+      role: 'assistant',
+      session_id: 's1',
+      parts: [{ type: 'text', data: { text: 'the environment', hidden: true } }],
+      created_at: 1,
+      updated_at: 1,
+    }
+    const { container } = render(
+      <Conversation {...props({ messages: [messages[0], resultOnly, hiddenOnly, messages[1]] })} />,
+    )
+    expect(articles()).toEqual(['hello', 'hi there'])
+    // The edge row and the two messages that draw; nothing else is a row.
+    expect(container.querySelectorAll('[data-index]')).toHaveLength(3)
   })
 
   it('streams under StrictMode without losing the newest text', () => {

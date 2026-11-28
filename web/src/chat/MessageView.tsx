@@ -111,16 +111,35 @@ function draw(segment: Segment, context: DrawContext): ReactNode {
   }
 }
 
+// drawCache keeps one verdict per message object. A streamed token makes a
+// new object, so a stale verdict can never be read, and the WeakMap lets the
+// old one go with it.
+const drawCache = new WeakMap<WireMessage, boolean>()
+
+// drawsNothing says the message has nothing to draw: no segment and no
+// finish notice. Its view renders nothing, so the virtualized log leaves it
+// out of the rows rather than give it an empty one.
+export function drawsNothing(message: WireMessage): boolean {
+  const cached = drawCache.get(message)
+  if (cached !== undefined) {
+    return cached
+  }
+  const parts = messageParts(message)
+  const answer = segments(parts).length === 0 && noticeFor(finishOf(parts)) === null
+  drawCache.set(message, answer)
+  return answer
+}
+
 // MessageView draws one message, its parts in the order they were written.
 // It is memoised: a streamed token makes a new object for the last message
 // only, and the result index keeps its identity until a result changes.
 function MessageView({ message, results, turnActive, depth = 0, footer = null }: MessageViewProps) {
   const parts = messageParts(message)
   const finish = finishOf(parts)
-  const list = segments(parts)
-  if (list.length === 0 && noticeFor(finish) === null) {
+  if (drawsNothing(message)) {
     return null
   }
+  const list = segments(parts)
   const user = message.role === 'user'
   const streaming = !user && turnActive && finish === null
   const copyText = parts
