@@ -216,9 +216,6 @@ type coordinator struct {
 	// the run is listed, so a cancel that arrives before its agent is
 	// tracked is kept in the run's context instead of being lost.
 	subCancels map[string]context.CancelCauseFunc
-	// settleMu serializes transcript repairs so two readers cannot both
-	// settle one orphaned call.
-	settleMu sync.Mutex
 
 	// Skills discovery results. The manager is the live source of
 	// truth; the slices below are its last-read snapshot. skillsMu guards

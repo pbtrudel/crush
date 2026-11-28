@@ -1269,9 +1269,8 @@ func (f *Fake) settleLocked(id string) {
 				open = append(open, tc)
 			}
 		}
-		if len(open) == 0 {
-			continue
-		}
+		// Every turn that never finished gets the finish part, whether the
+		// repair has results to write for it or its calls are all answered.
 		m.AddFinishAt(message.FinishReasonError, "Interrupted", "", m.UpdatedAt)
 		for _, tc := range open {
 			if !tc.Finished {
