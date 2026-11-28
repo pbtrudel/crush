@@ -51,14 +51,11 @@ jobs:
 
   e2e:
     runs-on: ubuntu-26.04
-    # The whole suite runs on one worker; a shard is a third of the spec
-    # files. 25 minutes covers setup, the webfake build, the browser install
-    # and a slow test with margin.
+    # The suite is two spec files on one worker, so it is one job: sharding it
+    # multiplied the setup cost by three for no wall-clock gain. 25 minutes
+    # covers setup, the webfake build, the browser install and a slow test with
+    # margin.
     timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,13 +75,12 @@ jobs:
       # Warm the Go build cache so the fixture's own build of the fake
       # gateway is quick and does not eat the first spec's setup time.
       - run: go build -o "$RUNNER_TEMP/webfake-warm" ./internal/web/cmd/webfake
-      # A shard that owns no spec file must not fail the matrix.
-      - run: npx playwright test --shard=${{ matrix.shard }}/3 --pass-with-no-tests
+      - run: npx playwright test
         working-directory: web
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: playwright-results-${{ matrix.shard }}
+          name: playwright-results
           path: |
             web/test-results
             web/playwright-report
