@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from 'react'
 
 import type { ApiClient } from '../api/http'
+import { renderTranscript } from '../chat/Transcript'
 import { visibleMessages, type AppState, type AppStore, type MessagesPage, type WireMessage } from '../store/app'
 import { useStore, type Store } from '../store/store'
 import { ToolEnvironmentProvider } from '../tools/environment'
@@ -78,8 +79,11 @@ function SessionConversation({ sessionId, title, client, store }: SessionConvers
   const mcp = useStore(store, (state) => state.bootstrap?.mcp)
   const mcpServers = useMemo(() => Object.keys(mcp ?? {}), [mcp])
 
+  // renderTranscript is the module's own function, so the environment's value
+  // keeps its identity between renders and a streamed delta re-renders no
+  // tool row but the one it changed.
   return (
-    <ToolEnvironmentProvider mcpServers={mcpServers} store={store}>
+    <ToolEnvironmentProvider mcpServers={mcpServers} store={store} renderTranscript={renderTranscript}>
       <Conversation
         sessionId={sessionId}
         title={title}

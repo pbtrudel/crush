@@ -1,4 +1,5 @@
 import type { ToolView } from './view'
+import { agentView, dispatchView, researchView } from './views/AgentView'
 import { bashView, jobKillView, jobOutputView } from './views/BashView'
 import { downloadView, fetchView, webFetchView, webSearchView } from './views/FetchView'
 import { editView, multiEditView, readView, writeView } from './views/FileViews'
@@ -28,6 +29,9 @@ const views = new Map<string, ToolView>([
   ['web_search', webSearchView],
   ['download', downloadView],
   ['todos', todosView],
+  ['agent', agentView],
+  ['agentic_fetch', researchView],
+  ['agent_dispatch', dispatchView],
   ['mcp_servers', genericView],
 ])
 
