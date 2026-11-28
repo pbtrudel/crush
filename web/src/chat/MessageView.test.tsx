@@ -78,6 +78,19 @@ describe('MessageView', () => {
     expect(screen.getByText('Thinking…')).toBeInTheDocument()
   })
 
+  it('reads the duration once the reasoning is finished', () => {
+    // The turn is still live, so the message streams, but this reasoning part
+    // already carries its finish: it is not thinking any more.
+    view(
+      message([
+        { type: 'reasoning', data: { thinking: 'Look first.', started_at: 10, finished_at: 13 } },
+      ]),
+      true,
+    )
+    expect(screen.getByText('Thought for 3s')).toBeInTheDocument()
+    expect(screen.queryByText('Thinking…')).toBeNull()
+  })
+
   it('renders nothing for a message of tool results', () => {
     const { container } = view(message([{ type: 'tool_result', data: { tool_call_id: 'tc-1', content: 'ok' } }], 'tool'))
     expect(container.querySelector('article')).toBeNull()
@@ -171,8 +184,9 @@ describe('MessageView', () => {
       't1',
     )
     view(message([call('tc-1'), call('tc-2', 'view')]), true, resultIndex([answered]))
-    expect(screen.getByText('Done')).toBeInTheDocument()
-    expect(screen.getByText('Running')).toBeInTheDocument()
+    // The answer is beside the call it belongs to, not merely on screen.
+    expect(screen.getByText('Done').closest('li')).toHaveTextContent('bash')
+    expect(screen.getByText('Running').closest('li')).toHaveTextContent('view')
   })
 
   it('draws a streamed reply in passes and lands on the last delta', () => {

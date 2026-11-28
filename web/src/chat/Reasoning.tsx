@@ -1,3 +1,4 @@
+import { firstLine } from '../tools/input'
 import { formatDuration } from './format'
 import styles from './MessageView.module.css'
 
@@ -8,24 +9,22 @@ export interface ReasoningProps {
   streaming: boolean
 }
 
-function preview(thinking: string): string {
-  const line = thinking.trim().split('\n')[0] ?? ''
-  return line.length > 120 ? `${line.slice(0, 119)}…` : line
-}
-
 // Reasoning is the model's thinking: a one-line preview that opens to the
 // whole text. It is never Markdown, because it is not written for people.
 export default function Reasoning({ thinking, startedAt, finishedAt, streaming }: ReasoningProps) {
-  const label = streaming
-    ? 'Thinking…'
-    : startedAt > 0 && finishedAt > startedAt
-      ? `Thought for ${formatDuration(finishedAt - startedAt)}`
+  // A part that carries its own finish is done thinking, whatever the turn
+  // around it is still doing: the duration replaces the live label.
+  const finished = startedAt > 0 && finishedAt > startedAt
+  const label = finished
+    ? `Thought for ${formatDuration(finishedAt - startedAt)}`
+    : streaming
+      ? 'Thinking…'
       : 'Reasoning'
   return (
     <details className={styles.reasoning}>
       <summary className={styles.reasoningSummary}>
         <span className={styles.reasoningLabel}>{label}</span>
-        <span className={styles.reasoningPreview}>{preview(thinking)}</span>
+        <span className={styles.reasoningPreview}>{firstLine(thinking, 120)}</span>
       </summary>
       <div className={styles.reasoningBody}>{thinking}</div>
     </details>

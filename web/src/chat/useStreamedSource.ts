@@ -20,6 +20,13 @@ export function useStreamedSource(
   const latest = useRef(source)
   const pending = useRef<number | null>(null)
 
+  // A settled block keeps the snapshot the next stream starts from in step
+  // with its text. This is React's documented way to follow a prop with
+  // state: the guard keeps the extra render to the one where they differ.
+  if (!streaming && shown !== source) {
+    setShown(source)
+  }
+
   useEffect(() => {
     latest.current = source
     if (!streaming) {
@@ -41,10 +48,14 @@ export function useStreamedSource(
   }, [source, streaming, interval])
 
   // The timer is the hook's only side effect, so it goes with the component.
+  // The slot is freed with the timer: a cleared timer that left it taken
+  // would stop every later pass, and StrictMode unmounts once before the
+  // hook ever settles.
   useEffect(
     () => () => {
       if (pending.current !== null) {
         window.clearTimeout(pending.current)
+        pending.current = null
       }
     },
     [],

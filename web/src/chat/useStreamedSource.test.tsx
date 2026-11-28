@@ -1,4 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
+import { StrictMode, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { streamedSourceInterval, useStreamedSource } from './useStreamedSource'
@@ -73,5 +74,47 @@ describe('useStreamedSource', () => {
     const { unmount } = stream('One')
     unmount()
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps a stream moving across StrictMode\u2019s double mount', () => {
+    vi.useFakeTimers()
+    // StrictMode mounts, unmounts and mounts again, so the cleanup runs once
+    // before the hook ever settles. A pending slot left behind by it would
+    // stop every later pass and freeze the block.
+    const wrapper = ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>
+    const { result, rerender } = renderHook(
+      ({ source, streaming }: { source: string; streaming: boolean }) =>
+        useStreamedSource(source, streaming),
+      { wrapper, initialProps: { source: 'a', streaming: true } },
+    )
+
+    rerender({ source: 'ab', streaming: true })
+    act(() => {
+      vi.advanceTimersByTime(streamedSourceInterval)
+    })
+    rerender({ source: 'abc', streaming: true })
+    act(() => {
+      vi.advanceTimersByTime(streamedSourceInterval)
+    })
+    expect(result.current).toBe('abc')
+  })
+
+  it('starts a stream from the text the block had settled on', () => {
+    vi.useFakeTimers()
+    const { result, rerender } = renderHook(
+      ({ source, streaming }: { source: string; streaming: boolean }) =>
+        useStreamedSource(source, streaming),
+      { initialProps: { source: 'a', streaming: false } },
+    )
+    // The block settles on new text while it is idle: a stream that starts
+    // afterwards must not fall back to the snapshot it was mounted with.
+    rerender({ source: 'ab', streaming: false })
+    expect(result.current).toBe('ab')
+    rerender({ source: 'abc', streaming: true })
+    expect(result.current).toBe('ab')
+    act(() => {
+      vi.advanceTimersByTime(streamedSourceInterval)
+    })
+    expect(result.current).toBe('abc')
   })
 })
