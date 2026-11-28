@@ -1230,18 +1230,39 @@ func (f *Fake) settleLocked(id string) {
 		return
 	}
 	msgs := f.messages[id]
+	// The first step of the real settle: the assistant rows that never
+	// finished, and only while one of them made a call the provider did not
+	// run itself. A finished turn is not a candidate, and a session with no
+	// candidate never looks at a tool row.
+	var turns []int
+	hasOwnCall := false
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role != message.Assistant || m.IsSummaryMessage || m.IsFinished() {
+			continue
+		}
+		turns = append(turns, i)
+		for _, tc := range m.ToolCalls() {
+			hasOwnCall = hasOwnCall || !tc.ProviderExecuted
+		}
+	}
+	if len(turns) == 0 || !hasOwnCall {
+		return
+	}
+	// The second step: tool rows from the oldest unfinished turn onward. A
+	// result is always created after the turn that made the call.
 	answered := make(map[string]bool)
 	for _, m := range msgs {
+		if m.Role != message.Tool || m.CreatedAt < msgs[turns[0]].CreatedAt {
+			continue
+		}
 		for _, tr := range m.ToolResults() {
 			answered[tr.ToolCallID] = true
 		}
 	}
 	var settled []message.Message
-	for i := range msgs {
+	for _, i := range turns {
 		m := &msgs[i]
-		if m.Role != message.Assistant {
-			continue
-		}
 		open := make([]message.ToolCall, 0, len(m.ToolCalls()))
 		for _, tc := range m.ToolCalls() {
 			if !tc.ProviderExecuted && !answered[tc.ID] {
@@ -1251,16 +1272,14 @@ func (f *Fake) settleLocked(id string) {
 		if len(open) == 0 {
 			continue
 		}
-		if !m.IsFinished() {
-			m.AddFinishAt(message.FinishReasonError, "Interrupted", "", m.UpdatedAt)
-		}
+		m.AddFinishAt(message.FinishReasonError, "Interrupted", "", m.UpdatedAt)
 		for _, tc := range open {
 			if !tc.Finished {
 				tc.Finished = true
 				m.AddToolCall(tc)
 			}
 			settled = append(settled, message.Message{
-				SessionID: id, Role: message.Tool,
+				SessionID: id, Role: message.Tool, CreatedAt: m.CreatedAt + 1,
 				Parts: []message.ContentPart{message.ToolResult{
 					ToolCallID: tc.ID,
 					Name:       tc.Name,

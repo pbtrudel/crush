@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -544,4 +546,103 @@ func TestSettleSession_DoesNotAnswerAnAnsweredCall(t *testing.T) {
 	}
 	require.Equal(t, "done", byCall["call_a"], "the stored result is left alone")
 	require.Equal(t, interruptedToolCallResult, byCall["call_b"])
+}
+
+// countingMessages counts the settle reads, so a test can pin that a healthy
+// session never loads its tool rows.
+type countingMessages struct {
+	message.Service
+	toolReads int
+}
+
+func (c *countingMessages) ListToolMessagesFrom(ctx context.Context, sessionID string, from int64) ([]message.Message, error) {
+	c.toolReads++
+	return c.Service.ListToolMessagesFrom(ctx, sessionID, from)
+}
+
+// flakyCreateMessages fails the first tool-result write, the way a store can
+// fail part way through a repair.
+type flakyCreateMessages struct {
+	message.Service
+	failed bool
+}
+
+func (f *flakyCreateMessages) Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+	if params.Role == message.Tool && !f.failed {
+		f.failed = true
+		return message.Message{}, errors.New("store is busy")
+	}
+	return f.Service.Create(ctx, sessionID, params)
+}
+
+// settlingCoordinatorOver builds a coordinator over another message service,
+// so a test can count or fail the settle's writes.
+func settlingCoordinatorOver(env fakeEnv, messages message.Service) *coordinator {
+	main := NewSessionAgent(SessionAgentOptions{Models: noModels, Sessions: env.sessions, Messages: messages})
+	return &coordinator{mainAgent: main, agents: map[string]SessionAgent{config.AgentCoder: main}, messages: messages}
+}
+
+// TestSettleSession_ReadsNoToolRowsForAHealthySession pins the cost of a page
+// read: a session with nothing unfinished never loads its tool rows, which
+// are the bulk of a long transcript.
+func TestSettleSession_ReadsNoToolRowsForAHealthySession(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, err := env.sessions.Create(ctx, "healthy")
+	require.NoError(t, err)
+	assistant, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_ok", Name: "bash", Input: "{}", Finished: true},
+			message.Finish{Reason: message.FinishReasonEndTurn, Time: 1000},
+		},
+	})
+	require.NoError(t, err)
+	// Update is what sets finished_at, so this turn is done.
+	require.NoError(t, env.messages.Update(ctx, assistant))
+	for range 50 {
+		_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+			Role:  message.Tool,
+			Parts: []message.ContentPart{message.ToolResult{ToolCallID: "call_ok", Name: "bash", Content: "ok"}},
+		})
+		require.NoError(t, err)
+	}
+
+	counting := &countingMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, counting)
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+	require.Zero(t, counting.toolReads, "a healthy session must read no tool rows")
+}
+
+// TestSettleSession_RetriesARepairThatStoppedHalfway pins that a repair which
+// failed on its result write is picked up by the next read instead of leaving
+// the call open forever.
+func TestSettleSession_RetriesARepairThatStoppedHalfway(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, assistant := killedTurn(t, env, true)
+	flaky := &flakyCreateMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, flaky)
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	for _, m := range stored {
+		require.Empty(t, m.ToolResults(), "the first pass wrote no result")
+	}
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	require.False(t, reloaded.IsFinished(), "a repair that stopped halfway leaves the turn open")
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+	stored, err = env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	var results []message.ToolResult
+	for _, m := range stored {
+		results = append(results, m.ToolResults()...)
+	}
+	require.Len(t, results, 1, "the next read settles the call")
+	require.Equal(t, interruptedToolCallResult, results[0].Content)
 }

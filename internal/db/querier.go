@@ -83,12 +83,16 @@ type Querier interface {
 	ListSessions(ctx context.Context) ([]Session, error)
 	ListSkillsDisabled(ctx context.Context) ([]string, error)
 	ListSkillsEnabled(ctx context.Context) ([]string, error)
-	// What a settle pass needs, and nothing else: the assistant rows that never
-	// finished, and every tool result that could already answer one of their
-	// calls. finished_at is written from the message's finish part, so a NULL
-	// means the turn never ended. Reading only these rows keeps settling a
-	// session off the whole transcript.
-	ListUnsettledMessages(ctx context.Context, sessionID string) ([]Message, error)
+	// The tool results that could answer a call made by one of the session's
+	// unfinished assistant rows. A result is created after the assistant row that
+	// made the call, so from_created_at (the oldest unfinished assistant's
+	// created_at) bounds the read and a healthy session reads no tool row at all.
+	// The bound is inclusive because created_at has one-second resolution.
+	ListToolMessagesFrom(ctx context.Context, arg ListToolMessagesFromParams) ([]Message, error)
+	// Where a settle pass starts: the assistant rows that never finished. A
+	// summary is not a turn, so it is never settled. finished_at is written from
+	// the message's finish part, so a NULL means the turn never ended.
+	ListUnfinishedAssistants(ctx context.Context, sessionID string) ([]Message, error)
 	// Backs prompt history, which steps back one entry at a time.
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error

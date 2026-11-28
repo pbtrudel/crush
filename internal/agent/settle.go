@@ -126,10 +126,11 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 			assistant.AddToolCall(tc)
 		}
 	}
-	if err := messages.Update(ctx, *assistant); err != nil {
-		return nil, fmt.Errorf("failed to settle tool calls: %w", err)
-	}
 
+	// The results are written before the turn is marked finished: the settle
+	// queries select on an unfinished turn, so a repair that dies on its
+	// result write has to leave the turn selectable, or the call would stay
+	// open forever.
 	settled := make([]message.Message, 0, len(calls))
 	for _, tc := range calls {
 		created, err := messages.Create(ctx, assistant.SessionID, message.CreateMessageParams{
@@ -147,6 +148,9 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 			return nil, fmt.Errorf("failed to record settled tool result: %w", err)
 		}
 		settled = append(settled, created)
+	}
+	if err := messages.Update(ctx, *assistant); err != nil {
+		return nil, fmt.Errorf("failed to settle tool calls: %w", err)
 	}
 	return settled, nil
 }
@@ -196,11 +200,13 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 
 // SettleSession repairs what a dead process left behind in a session with
 // nothing running in it. It is ListSettledMessages for a reader that pages
-// the store instead of loading the whole transcript: it reads only the
-// unfinished assistant messages and the tool results that could answer them,
-// and hands those to the same repair. busy reports whether a run owns the
-// session, and is sampled on both sides of the read, since a run that starts
-// during it owns the calls the rows still look open on.
+// the store instead of loading the whole transcript, and it reads in two
+// steps so a healthy session costs almost nothing: first the unfinished
+// assistant rows, then, only if one of them made a call the provider did not
+// run itself, the tool results created since the oldest of them. Those rows
+// go to the same repair ListSettledMessages uses. busy reports whether a run
+// owns the session, and is sampled on both sides of the read, since a run
+// that starts during it owns the calls the rows still look open on.
 func SettleSession(ctx context.Context, messages message.Service, busy func(sessionID string) bool, sessionID string) error {
 	if err := messages.FlushAll(ctx); err != nil {
 		return err
@@ -208,20 +214,42 @@ func SettleSession(ctx context.Context, messages message.Service, busy func(sess
 	if busy(sessionID) {
 		return nil
 	}
-	msgs, err := messages.ListUnsettled(ctx, sessionID)
+	turns, err := messages.ListUnfinishedAssistants(ctx, sessionID)
 	if err != nil {
 		return err
 	}
-	if len(msgs) == 0 || busy(sessionID) {
+	if len(turns) == 0 || !hasOwnToolCall(turns) || busy(sessionID) {
+		// Nothing to settle: the common case, and it reads no tool row.
 		return nil
 	}
-	if _, err := repairInterruptedToolCalls(ctx, messages, msgs); err != nil {
-		// A page of unsettled rows is still better than no page; the next
-		// reader settles again.
+	results, err := messages.ListToolMessagesFrom(ctx, sessionID, turns[0].CreatedAt)
+	if err != nil {
+		return err
+	}
+	if _, err := repairInterruptedToolCalls(ctx, messages, append(turns, results...)); err != nil {
+		// The repair writes results before it finishes the turn, so a
+		// failure here leaves the turn open for the next reader: a result
+		// that failed to write is retried, and one that did is not written
+		// twice.
 		slog.Warn("Failed to settle interrupted tool calls",
 			"session_id", sessionID, "error", err)
 	}
 	return nil
+}
+
+// hasOwnToolCall reports whether any of the turns made a call the provider did
+// not run itself. A provider-run call is answered in the response that made
+// it, so it never needs a settle result and is not worth reading tool rows
+// for.
+func hasOwnToolCall(turns []message.Message) bool {
+	for _, turn := range turns {
+		for _, tc := range turn.ToolCalls() {
+			if !tc.ProviderExecuted {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // SettleSession repairs the session's dangling tool calls under the settle

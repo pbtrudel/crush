@@ -72,3 +72,33 @@ func TestFullSessionListKeepsItsOrder(t *testing.T) {
 	require.Contains(t, got, "idx_messages_session_created_at")
 	require.NotContains(t, got, "TEMP B-TREE")
 }
+
+// TestSettleReadsUseSessionIndex pins the two queries a settle pass runs. They
+// walk the same session in the same order as the pages they precede, so the
+// composite index has to serve both.
+func TestSettleReadsUseSessionIndex(t *testing.T) {
+	t.Parallel()
+
+	for name, q := range map[string]string{
+		"unfinished assistants": `SELECT * FROM messages
+			WHERE session_id = 's1'
+			  AND role = 'assistant'
+			  AND is_summary_message = 0
+			  AND finished_at IS NULL
+			ORDER BY created_at ASC, rowid ASC`,
+		"tool rows from the bound": `SELECT * FROM messages
+			WHERE session_id = 's1'
+			  AND role = 'tool'
+			  AND created_at >= 5
+			ORDER BY created_at ASC, rowid ASC`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := messagesPlan(t, q)
+			require.Contains(t, got, "idx_messages_session_created_at",
+				"a settle read must seek the session index, not walk the table")
+			require.NotContains(t, got, "TEMP B-TREE",
+				"the index covers the ordering, so no sort should be needed")
+		})
+	}
+}

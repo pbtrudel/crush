@@ -70,11 +70,16 @@ type Service interface {
 	// be a message of this session, or [ErrUnknownMessage]. The bool
 	// reports whether older messages remain.
 	PageMessages(ctx context.Context, sessionID, before string, limit int) ([]Message, bool, error)
-	// ListUnsettled returns what a settle pass needs for a session with
-	// nothing running in it: the assistant messages that never finished,
-	// and the tool results that answer their calls. It reads only those
-	// rows, never the whole transcript.
-	ListUnsettled(ctx context.Context, sessionID string) ([]Message, error)
+	// ListUnfinishedAssistants returns the session's assistant messages
+	// that never finished, which is where a settle pass starts. A summary
+	// is not a turn, so it is left out.
+	ListUnfinishedAssistants(ctx context.Context, sessionID string) ([]Message, error)
+	// ListToolMessagesFrom returns the session's tool messages created at
+	// or after fromCreatedAt, the oldest unfinished assistant row's
+	// created_at. A result is always created after the row that made the
+	// call, so this is the most a settle pass has to read: a session with
+	// no unfinished assistant reads no tool row at all.
+	ListToolMessagesFrom(ctx context.Context, sessionID string, fromCreatedAt int64) ([]Message, error)
 	GetLastAssistantMessage(ctx context.Context, sessionID string) (Message, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
@@ -628,21 +633,39 @@ func (s *service) PageMessages(ctx context.Context, sessionID, before string, li
 	return messages, hasMore, nil
 }
 
-// ListUnsettled reads the rows a settle pass repairs. finished_at is written
-// from a message's finish part when a turn ends, so an unfinished assistant
-// message is one that never got there; the tool rows come along so a call
-// that already has a result is not answered twice.
-func (s *service) ListUnsettled(ctx context.Context, sessionID string) ([]Message, error) {
-	dbMessages, err := s.q.ListUnsettledMessages(ctx, sessionID)
+// ListUnfinishedAssistants reads the turns a settle pass repairs. finished_at
+// is written from a message's finish part when a turn ends, so an unfinished
+// assistant message is one that never got there.
+func (s *service) ListUnfinishedAssistants(ctx context.Context, sessionID string) ([]Message, error) {
+	dbMessages, err := s.q.ListUnfinishedAssistants(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	messages := make([]Message, len(dbMessages))
-	for i, dbMessage := range dbMessages {
-		messages[i], err = s.fromDBItem(dbMessage)
+	return s.fromDBItems(dbMessages)
+}
+
+// ListToolMessagesFrom reads the tool results that could answer a call made
+// by an unfinished turn, from that turn's created_at onward.
+func (s *service) ListToolMessagesFrom(ctx context.Context, sessionID string, fromCreatedAt int64) ([]Message, error) {
+	dbMessages, err := s.q.ListToolMessagesFrom(ctx, db.ListToolMessagesFromParams{
+		SessionID: sessionID,
+		CreatedAt: fromCreatedAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.fromDBItems(dbMessages)
+}
+
+// fromDBItems converts a query's rows, keeping their order.
+func (s *service) fromDBItems(items []db.Message) ([]Message, error) {
+	messages := make([]Message, len(items))
+	for i, item := range items {
+		msg, err := s.fromDBItem(item)
 		if err != nil {
 			return nil, err
 		}
+		messages[i] = msg
 	}
 	return messages, nil
 }
