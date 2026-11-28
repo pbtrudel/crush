@@ -179,9 +179,13 @@ type Fake struct {
 	listMessagesGate *agentModelGate
 	// getSessionCalls counts GetSession reads, so a test can prove a path
 	// reads the session once; sessionErr is what GetSession answers when
-	// set. Set it with SetSessionErr.
-	getSessionCalls int
-	sessionErr      error
+	// set. Set it with SetSessionErr. listMessagesCalls and
+	// listMessagesPageCalls count the two read paths, so a test can prove a
+	// page does not read the whole transcript.
+	getSessionCalls       int
+	sessionErr            error
+	listMessagesCalls     int
+	listMessagesPageCalls int
 	// initializePrompt is what InitializePrompt answers; set it with
 	// SetInitializePrompt.
 	initializePrompt string
@@ -436,8 +440,9 @@ func (f *Fake) SetAgentModelGate(entered chan<- struct{}, release <-chan struct{
 	f.mu.Unlock()
 }
 
-// SetListMessagesGate holds the next ListMessages call until release is
-// closed, reporting on entered first. It is one-shot: later reads pass
+// SetListMessagesGate holds the next message read until release is closed,
+// reporting on entered first, whichever read path (ListMessages or
+// ListMessagesPage) the gateway takes. It is one-shot: later reads pass
 // through, so a test only gates the snapshot it means to hold.
 func (f *Fake) SetListMessagesGate(entered chan<- struct{}, release <-chan struct{}) {
 	f.mu.Lock()
@@ -1160,6 +1165,7 @@ func (f *Fake) SetSessionQueued(id string, prompts []string) {
 
 func (f *Fake) ListMessages(ctx context.Context, id string) ([]message.Message, error) {
 	f.mu.Lock()
+	f.listMessagesCalls++
 	gate := f.listMessagesGate
 	f.listMessagesGate = nil
 	messages := append([]message.Message(nil), f.messages[id]...)
@@ -1173,6 +1179,57 @@ func (f *Fake) ListMessages(ctx context.Context, id string) ([]message.Message, 
 		}
 	}
 	return messages, nil
+}
+
+// ListMessagesPage answers one page of a session's transcript the way the
+// real store does: the page that ends just before before, oldest first, and
+// whether older messages remain. message.ErrUnknownMessage reports a before
+// id the session does not have.
+func (f *Fake) ListMessagesPage(ctx context.Context, id, before string, limit int) ([]message.Message, bool, error) {
+	f.mu.Lock()
+	f.listMessagesPageCalls++
+	gate := f.listMessagesGate
+	f.listMessagesGate = nil
+	messages := append([]message.Message(nil), f.messages[id]...)
+	f.mu.Unlock()
+	if gate != nil {
+		gate.entered <- struct{}{}
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+	end := len(messages)
+	if before != "" {
+		index := -1
+		for i, m := range messages {
+			if m.ID == before {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return nil, false, message.ErrUnknownMessage
+		}
+		end = index
+	}
+	start := max(0, end-limit)
+	return messages[start:end], start > 0, nil
+}
+
+// ListMessagesCalls reports how many full-transcript reads the gateway made.
+func (f *Fake) ListMessagesCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listMessagesCalls
+}
+
+// ListMessagesPageCalls reports how many paged reads the gateway made.
+func (f *Fake) ListMessagesPageCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listMessagesPageCalls
 }
 
 func (f *Fake) ListChildSessions(_ context.Context, parentID string) ([]session.Session, error) {

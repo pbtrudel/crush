@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -62,6 +64,12 @@ type Service interface {
 	ListFromCut(ctx context.Context, sessionID, cutMessageID string) ([]Message, error)
 	ListUserMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	// PageMessages returns one page of a session's transcript, oldest
+	// first, without loading the rest of it. An empty before asks for the
+	// newest page; otherwise the page ends just before before, which must
+	// be a message of this session, or [ErrUnknownMessage]. The bool
+	// reports whether older messages remain.
+	PageMessages(ctx context.Context, sessionID, before string, limit int) ([]Message, bool, error)
 	GetLastAssistantMessage(ctx context.Context, sessionID string) (Message, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
@@ -565,6 +573,71 @@ func (s *service) List(ctx context.Context, sessionID string) ([]Message, error)
 		}
 	}
 	return messages, nil
+}
+
+// ErrUnknownMessage reports a before id the session does not have.
+var ErrUnknownMessage = errors.New("message: unknown message id")
+
+// PageMessages reads one page of a session's transcript. It asks the store
+// for one row more than the page, which is how it learns whether older
+// messages remain, and reverses the newest-first rows the store returns.
+func (s *service) PageMessages(ctx context.Context, sessionID, before string, limit int) ([]Message, bool, error) {
+	if limit < 1 {
+		return nil, false, fmt.Errorf("message: page limit must be positive, got %d", limit)
+	}
+	// One row past the page: an extra row is what reports has_more.
+	want := int64(limit) + 1
+	var items []db.Message
+	var err error
+	if before == "" {
+		items, err = s.q.ListLatestMessagesPage(ctx, db.ListLatestMessagesPageParams{
+			SessionID: sessionID,
+			Limit:     want,
+		})
+	} else {
+		if err := s.checkPageAnchor(ctx, sessionID, before); err != nil {
+			return nil, false, err
+		}
+		items, err = s.q.ListMessagesPageBefore(ctx, db.ListMessagesPageBeforeParams{
+			SessionID: sessionID,
+			ID:        before,
+			Limit:     want,
+		})
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	// The store answers newest first; every caller reads oldest first.
+	slices.Reverse(items)
+	messages := make([]Message, len(items))
+	for i, item := range items {
+		messages[i], err = s.fromDBItem(item)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	return messages, hasMore, nil
+}
+
+// checkPageAnchor reports [ErrUnknownMessage] unless before names a message
+// of this session. The page query compares against the anchor's position, so
+// an id from another session would silently page from the wrong place.
+func (s *service) checkPageAnchor(ctx context.Context, sessionID, before string) error {
+	anchor, err := s.q.GetMessage(ctx, before)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUnknownMessage
+		}
+		return err
+	}
+	if anchor.SessionID != sessionID {
+		return ErrUnknownMessage
+	}
+	return nil
 }
 
 func (s *service) ListFromSummary(ctx context.Context, sessionID, summaryMessageID string) ([]Message, error) {

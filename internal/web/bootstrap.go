@@ -133,11 +133,9 @@ func (g *Gateway) buildSessionSnapshot(ctx context.Context, sess session.Session
 		Files:     []FileSummary{},
 		Queued:    []string{},
 	}
-	if msgs, err := g.ws.ListMessages(ctx, sess.ID); err == nil {
-		if page, hasMore, err := pageMessages(msgs, before, limit); err == nil {
-			s.Messages = entities(page)
-			s.HasMore = hasMore
-		}
+	if page, hasMore, err := g.messagePage(ctx, sess.ID, before, limit); err == nil {
+		s.Messages = entities(page)
+		s.HasMore = hasMore
 	} else {
 		slog.Debug("Web session snapshot could not list messages", "session_id", sess.ID, "error", err)
 	}

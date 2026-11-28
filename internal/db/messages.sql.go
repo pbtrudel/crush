@@ -204,6 +204,62 @@ func (q *Queries) ListAllUserMessages(ctx context.Context) ([]Message, error) {
 	return items, nil
 }
 
+const listLatestMessagesPage = `-- name: ListLatestMessagesPage :many
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, prism_model_id, prism_model_name, prism_hypercredit_savings, prism_dollar_savings, model_name
+FROM messages
+WHERE session_id = ?
+ORDER BY created_at DESC, rowid DESC
+LIMIT ?
+`
+
+type ListLatestMessagesPageParams struct {
+	SessionID string `json:"session_id"`
+	Limit     int64  `json:"limit"`
+}
+
+// The newest page of a session: the gateway's load-older button walks
+// backwards from it one page at a time. Newest first, so a LIMIT keeps the
+// newest rows; the caller reverses the page. created_at has one-second
+// resolution, so rowid breaks ties exactly as ListMessagesBySession does.
+func (q *Queries) ListLatestMessagesPage(ctx context.Context, arg ListLatestMessagesPageParams) ([]Message, error) {
+	rows, err := q.query(ctx, q.listLatestMessagesPageStmt, listLatestMessagesPage, arg.SessionID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
+			&i.PrismModelID,
+			&i.PrismModelName,
+			&i.PrismHypercreditSavings,
+			&i.PrismDollarSavings,
+			&i.ModelName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMessagesBySession = `-- name: ListMessagesBySession :many
 SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message, prism_model_id, prism_model_name, prism_hypercredit_savings, prism_dollar_savings, model_name
 FROM messages
@@ -324,6 +380,65 @@ type ListMessagesBySessionFromSummaryParams struct {
 // summary can come back too; the caller slices from the summary by ID.
 func (q *Queries) ListMessagesBySessionFromSummary(ctx context.Context, arg ListMessagesBySessionFromSummaryParams) ([]Message, error) {
 	rows, err := q.query(ctx, q.listMessagesBySessionFromSummaryStmt, listMessagesBySessionFromSummary, arg.SessionID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
+			&i.PrismModelID,
+			&i.PrismModelName,
+			&i.PrismHypercreditSavings,
+			&i.PrismDollarSavings,
+			&i.ModelName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMessagesPageBefore = `-- name: ListMessagesPageBefore :many
+SELECT m.id, m.session_id, m.role, m.parts, m.model, m.created_at, m.updated_at, m.finished_at, m.provider, m.is_summary_message, m.prism_model_id, m.prism_model_name, m.prism_hypercredit_savings, m.prism_dollar_savings, m.model_name
+FROM messages m
+WHERE m.session_id = ?
+  AND (m.created_at, m.rowid) < (SELECT b.created_at, b.rowid FROM messages b WHERE b.id = ?)
+ORDER BY m.created_at DESC, m.rowid DESC
+LIMIT ?
+`
+
+type ListMessagesPageBeforeParams struct {
+	SessionID string `json:"session_id"`
+	ID        string `json:"id"`
+	Limit     int64  `json:"limit"`
+}
+
+// One page of a session older than the given message, newest first; the
+// caller reverses it. The row-value comparison matches ListMessagesBySession's
+// created_at, rowid order exactly, so paging visits the same rows in the same
+// order as reading the whole transcript. The caller asks for one row more
+// than the page to learn whether older messages remain.
+func (q *Queries) ListMessagesPageBefore(ctx context.Context, arg ListMessagesPageBeforeParams) ([]Message, error) {
+	rows, err := q.query(ctx, q.listMessagesPageBeforeStmt, listMessagesPageBefore, arg.SessionID, arg.ID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

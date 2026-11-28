@@ -113,6 +113,19 @@ func (w *AppWorkspace) ListMessages(ctx context.Context, sessionID string) ([]me
 	return w.app.Messages.List(ctx, sessionID)
 }
 
+// ListMessagesPage reads one page of a session's transcript straight from the
+// message store, so a long session is never loaded whole. It is deliberately
+// not part of [Workspace]: a client/server workspace has no such call, and the
+// gateway falls back to ListMessages there. The gateway calls it only for a
+// session that is not busy, which is exactly when there is no in-flight tool
+// call for the settled read to repair.
+func (w *AppWorkspace) ListMessagesPage(ctx context.Context, sessionID, before string, limit int) ([]message.Message, bool, error) {
+	if err := w.app.Messages.FlushAll(ctx); err != nil {
+		return nil, false, err
+	}
+	return w.app.Messages.PageMessages(ctx, sessionID, before, limit)
+}
+
 func (w *AppWorkspace) ListUserMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
 	return w.app.Messages.ListUserMessages(ctx, sessionID)
 }
