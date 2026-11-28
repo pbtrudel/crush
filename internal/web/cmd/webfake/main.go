@@ -199,7 +199,9 @@ func main() {
 	if m2 {
 		// The stream starts when the spec writes the file, so the reply
 		// cannot race a page that boots slowly; without one it starts two
-		// seconds in, for a person watching the dev server.
+		// seconds in, for a person watching the dev server. A spec that
+		// reads "Stream a reply" must set WEBFAKE_M2_STREAM_ON_FILE: the
+		// auto-start would otherwise finish before the page opens.
 		step := 150 * time.Millisecond
 		if file := os.Getenv("WEBFAKE_M2_STREAM_ON_FILE"); file != "" {
 			go func() {

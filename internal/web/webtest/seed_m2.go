@@ -68,7 +68,8 @@ var m2Markdown = strings.Join([]string{
 // m2BashOutput is a failed test run long enough for the terminal's 200-line
 // clip, so the row offers a "Show all" button: the focusable control the
 // paging specs reach for. The escapes and the Exit code line are what the
-// bash tool stores, not a mistake.
+// bash tool stores, not a mistake, and the last line has no newline because
+// the tool appends the working directory itself.
 func m2BashOutput() string {
 	var out strings.Builder
 	fmt.Fprintln(&out, "\x1b[31mFAIL\x1b[0m parser_test.go:12")
@@ -76,9 +77,16 @@ func m2BashOutput() string {
 	for i := 3; i <= 250; i++ {
 		fmt.Fprintf(&out, "parser/parser.go:%d: token %d did not match\n", i, i)
 	}
-	fmt.Fprint(&out, "\nExit code 1\n")
+	fmt.Fprint(&out, "\nExit code 1")
 	return out.String()
 }
+
+// m2StreamTurns is how many short finished turns sit between the bash turn
+// and the stream. The virtualizer keeps six rows of overscan around the
+// window; at 1280x720 the tall streamed reply fills the window, so at most
+// the reply row and its prompt row are visible, and this many rows put the
+// bash turn far outside the overscan the focus spec must defeat.
+const m2StreamTurns = 6
 
 // SeedM2 gives the fake the sessions the M2 browser specs drive. Call it
 // before the gateway starts; PlayM2Stream then streams the busy session's
@@ -97,11 +105,7 @@ func SeedM2(f *Fake, clock time.Time) {
 	seedM2Chat(f, at)
 	seedM2Child(f, at)
 	seedM2Long(f, at)
-	f.AddMessage(message.Message{
-		ID: M2StreamSession + "-u", SessionID: M2StreamSession, Role: message.User, CreatedAt: at - 30, UpdatedAt: at - 30,
-		Parts: []message.ContentPart{message.TextContent{Text: "Write a long reply, one line at a time"}},
-	})
-	f.AddMessage(m2StreamReply(at, 0))
+	seedM2Stream(f, at)
 	f.SetSessionBusy(M2StreamSession, true)
 }
 
@@ -117,6 +121,13 @@ func metadata(v any) string {
 func m2Assistant(id string, createdAt int64, parts ...message.ContentPart) message.Message {
 	return message.Message{
 		ID: id, SessionID: M2ChatSession, Role: message.Assistant, CreatedAt: createdAt, UpdatedAt: createdAt,
+		Model: m2Model, Provider: "anthropic", Parts: parts,
+	}
+}
+
+func m2StreamAssistant(id string, createdAt int64, parts ...message.ContentPart) message.Message {
+	return message.Message{
+		ID: id, SessionID: M2StreamSession, Role: message.Assistant, CreatedAt: createdAt, UpdatedAt: createdAt,
 		Model: m2Model, Provider: "anthropic", Parts: parts,
 	}
 }
@@ -164,7 +175,7 @@ func seedM2Chat(f *Fake, at int64) {
 	f.AddMessage(m2Assistant(M2ChatSession+"-a2", at-89, parts...))
 
 	results := []message.ToolResult{
-		{ToolCallID: "tc-bash", Name: "bash", Content: "FAIL parser\n<cwd>/tmp/project</cwd>", Metadata: metadata(map[string]any{
+		{ToolCallID: "tc-bash", Name: "bash", Content: m2BashOutput() + "\n\n<cwd>/tmp/project</cwd>", Metadata: metadata(map[string]any{
 			"start_time":        (at - 90) * 1000,
 			"end_time":          (at - 89) * 1000,
 			"output":            m2BashOutput(),
@@ -221,6 +232,52 @@ func seedM2Chat(f *Fake, at int64) {
 	))
 }
 
+// seedM2Stream seeds the busy session. A finished bash turn with a clipped
+// output gives the log the focusable "Show all" control, the short turns
+// below push that row past the virtualizer's overscan, and the unfinished
+// reply PlayM2Stream grows is the live end.
+func seedM2Stream(f *Fake, at int64) {
+	f.AddMessage(m2User(M2StreamSession, M2StreamSession+"-u1", at-100, "Run the tests"))
+	f.AddMessage(m2StreamAssistant(M2StreamSession+"-a1", at-99,
+		message.TextContent{Text: "Running the parser tests."},
+		message.ToolCall{ID: "tc-stream-bash", Name: "bash", Input: `{"command":"go test ./...","description":"Run the tests"}`, Finished: true},
+		message.Finish{Reason: message.FinishReasonToolUse, Time: at - 99},
+	))
+	f.AddMessage(message.Message{
+		ID: M2StreamSession + "-t1", SessionID: M2StreamSession, Role: message.Tool, CreatedAt: at - 98, UpdatedAt: at - 98,
+		Parts: []message.ContentPart{message.ToolResult{
+			ToolCallID: "tc-stream-bash",
+			Name:       "bash",
+			Content:    m2BashOutput() + "\n\n<cwd>/tmp/project</cwd>",
+			Metadata: metadata(map[string]any{
+				"start_time":        (at - 100) * 1000,
+				"end_time":          (at - 99) * 1000,
+				"output":            m2BashOutput(),
+				"exit_code":         1,
+				"description":       "Run the tests",
+				"working_directory": "/tmp/project",
+			}),
+		}},
+	})
+	f.AddMessage(m2StreamAssistant(M2StreamSession+"-a2", at-97,
+		message.TextContent{Text: "The parser tests fail on the new token stream."},
+		message.Finish{Reason: message.FinishReasonEndTurn, Time: at - 97},
+	))
+	for i := range m2StreamTurns {
+		created := at - 90 + int64(i*2)
+		f.AddMessage(m2User(M2StreamSession, fmt.Sprintf("%s-u%d", M2StreamSession, i+2), created, fmt.Sprintf("Follow-up %d", i+1)))
+		f.AddMessage(m2StreamAssistant(fmt.Sprintf("%s-a%d", M2StreamSession, i+3), created+1,
+			message.TextContent{Text: fmt.Sprintf("Short answer %d.", i+1)},
+			message.Finish{Reason: message.FinishReasonEndTurn, Time: created + 1},
+		))
+	}
+	f.AddMessage(message.Message{
+		ID: M2StreamSession + "-u", SessionID: M2StreamSession, Role: message.User, CreatedAt: at - 30, UpdatedAt: at - 30,
+		Parts: []message.ContentPart{message.TextContent{Text: "Write a long reply, one line at a time"}},
+	})
+	f.AddMessage(m2StreamReply(at, 0))
+}
+
 func seedM2Child(f *Fake, at int64) {
 	child := func(m message.Message) {
 		m.SessionID = M2ChildSession
@@ -249,7 +306,12 @@ func seedM2Child(f *Fake, at int64) {
 func seedM2Long(f *Fake, at int64) {
 	for i := range M2LongMessages {
 		created := at - 10_000 + int64(i)
-		text := fmt.Sprintf("History message %d", i)
+		// Five one-line paragraphs: the 30-row older page is several
+		// screens tall at 1280x720, so its prepend is a real scroll.
+		text := fmt.Sprintf(
+			"History message %d\n\nContext: the parser keeps its own token stream.\n\nNote: this fixture is older than the session.\n\nMore: it makes an older page several screens tall.\n\nEnd of the entry.",
+			i,
+		)
 		if i%2 == 0 {
 			f.AddMessage(m2User(M2LongSession, fmt.Sprintf("%s-m%03d", M2LongSession, i), created, text))
 			continue
