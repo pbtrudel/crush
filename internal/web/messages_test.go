@@ -178,6 +178,34 @@ func TestMessagesPageSettlesAnIdleSession(t *testing.T) {
 	require.Zero(t, fake.ListMessagesCalls(), "neither read loads the whole transcript")
 }
 
+// TestMessagesPageFinishesAStalledTurn pins the page a tab reads after a
+// process died between its last result and the end of the step: the turn has
+// no open call, but it is finished anyway, so the tab never shows a turn that
+// is still running.
+func TestMessagesPageFinishesAStalledTurn(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.AddMessage(textMessage("m1", "s1", "run the thing"))
+	// An assistant turn with nothing to answer: only the provider ran its
+	// call, and it never finished.
+	fake.AddMessage(message.Message{
+		ID: "m2", SessionID: "s1", Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_provider", Name: "web_search", ProviderExecuted: true, Finished: true},
+		},
+	})
+	c := authedClient(t, g)
+
+	rsp, body := doJSON(t, c, http.MethodGet, g.URL()+"/api/sessions/s1/messages?limit=10", "")
+	rsp.Body.Close()
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	var page messagesResponse
+	require.NoError(t, json.Unmarshal(body, &page))
+	require.Len(t, page.Messages, 2, "a stalled turn gains no result row")
+	require.Contains(t, string(page.Messages[1]), `"reason":"error"`)
+	require.Contains(t, string(page.Messages[1]), `"message":"Interrupted"`)
+}
+
 // TestBusySessionIsPagedWithoutARepair pins the other half: a live run owns
 // its unanswered calls, so a busy session pages exactly what is stored.
 func TestBusySessionIsPagedWithoutARepair(t *testing.T) {

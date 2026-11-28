@@ -1246,18 +1246,21 @@ func (f *Fake) settleLocked(id string) {
 			hasOwnCall = hasOwnCall || !tc.ProviderExecuted
 		}
 	}
-	if len(turns) == 0 || !hasOwnCall {
+	if len(turns) == 0 {
 		return
 	}
-	// The second step: tool rows from the oldest unfinished turn onward. A
-	// result is always created after the turn that made the call.
+	// The second step reads tool rows only when a turn made a call the
+	// provider did not run itself, exactly as the real settle does: a turn
+	// with nothing to answer still needs its finish part below.
 	answered := make(map[string]bool)
-	for _, m := range msgs {
-		if m.Role != message.Tool || m.CreatedAt < msgs[turns[0]].CreatedAt {
-			continue
-		}
-		for _, tr := range m.ToolResults() {
-			answered[tr.ToolCallID] = true
+	if hasOwnCall {
+		for _, m := range msgs {
+			if m.Role != message.Tool || m.CreatedAt < msgs[turns[0]].CreatedAt {
+				continue
+			}
+			for _, tr := range m.ToolResults() {
+				answered[tr.ToolCallID] = true
+			}
 		}
 	}
 	var settled []message.Message

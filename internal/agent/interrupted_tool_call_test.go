@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
@@ -681,8 +682,20 @@ func resultsIn(t *testing.T, messages message.Service, sessionID, callID string)
 	return n
 }
 
+// stalledSettleMessages widens the window the settle lock has to close: every
+// pass pauses inside its first read, so overlapping callers would all see the
+// same open call if they were not serialised.
+type stalledSettleMessages struct {
+	message.Service
+}
+
+func (s *stalledSettleMessages) ListUnfinishedAssistants(ctx context.Context, sessionID string) ([]message.Message, error) {
+	time.Sleep(5 * time.Millisecond)
+	return s.Service.ListUnfinishedAssistants(ctx, sessionID)
+}
+
 // TestSettleSession_ConcurrentSettlesWriteOneResult pins the one lock both
-// settle paths share. a tab that pages through the coordinator and a tab that
+// settle paths share. A tab that pages through the coordinator and a tab that
 // pages before the agent exists reach the settle through different callers, so
 // without a common lock both would write a result for the same call.
 func TestSettleSession_ConcurrentSettlesWriteOneResult(t *testing.T) {
@@ -690,7 +703,8 @@ func TestSettleSession_ConcurrentSettlesWriteOneResult(t *testing.T) {
 	ctx := t.Context()
 
 	sess, _ := killedTurn(t, env, true)
-	c := settlingCoordinator(env)
+	messages := &stalledSettleMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, messages)
 
 	var wg sync.WaitGroup
 	for range 8 {
@@ -698,7 +712,7 @@ func TestSettleSession_ConcurrentSettlesWriteOneResult(t *testing.T) {
 			require.NoError(t, c.SettleSession(ctx, sess.ID))
 		})
 		wg.Go(func() {
-			require.NoError(t, SettleSession(ctx, env.messages, func(string) bool { return false }, sess.ID))
+			require.NoError(t, SettleSession(ctx, messages, func(string) bool { return false }, sess.ID))
 		})
 	}
 	wg.Wait()
