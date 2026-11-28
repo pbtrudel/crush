@@ -11,6 +11,17 @@ describe('CodeBlock', () => {
     expect(container.querySelector('pre')?.textContent).toContain('func main() {}')
   })
 
+  // A diff fence carries markup.inserted and markup.deleted, which the
+  // css-variables theme spells as its own two variables: the block must
+  // reach the matching tok- classes, and shiki.css must colour them.
+  it('highlights a diff fence with the inserted and deleted classes', async () => {
+    const code = '--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old line\n+new line'
+    const { container } = render(<CodeBlock code={code} language="diff" />)
+    await waitFor(() => expect(container.querySelector('.tok-inserted')).not.toBeNull(), { timeout: 10_000 })
+    expect(container.querySelector('.tok-deleted')).not.toBeNull()
+    expect(container.querySelector('[style]')).toBeNull()
+  })
+
   it('renders an unknown label as plain text', async () => {
     const { container } = render(<CodeBlock code="x = 1" language="constructor" />)
     expect(container.querySelector('pre')?.textContent).toBe('x = 1')

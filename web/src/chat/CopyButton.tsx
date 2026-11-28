@@ -7,16 +7,21 @@ export interface CopyButtonProps {
   label: string
 }
 
-// CopyButton writes its text to the clipboard and says so for a moment.
+type CopyState = 'idle' | 'copied' | 'failed'
+
+const captions: Record<CopyState, string> = { idle: 'Copy', copied: 'Copied', failed: 'Copy failed' }
+
+// CopyButton writes its text to the clipboard and says what came of it for
+// a moment: a denied clipboard says so rather than looking like a no-op.
 export default function CopyButton({ text, label }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false)
+  const [state, setState] = useState<CopyState>('idle')
   useEffect(() => {
-    if (!copied) {
+    if (state === 'idle') {
       return
     }
-    const timer = window.setTimeout(() => setCopied(false), 1500)
+    const timer = window.setTimeout(() => setState('idle'), 1500)
     return () => window.clearTimeout(timer)
-  }, [copied])
+  }, [state])
   return (
     <button
       type="button"
@@ -24,12 +29,12 @@ export default function CopyButton({ text, label }: CopyButtonProps) {
       aria-label={label}
       onClick={() => {
         void navigator.clipboard?.writeText(text).then(
-          () => setCopied(true),
-          () => undefined,
+          () => setState('copied'),
+          () => setState('failed'),
         )
       }}
     >
-      {copied ? 'Copied' : 'Copy'}
+      {captions[state]}
     </button>
   )
 }

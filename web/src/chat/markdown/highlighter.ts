@@ -98,11 +98,16 @@ const maxLineLength = 1000
 let core: Promise<HighlighterCore> | null = null
 const loading = new Map<LanguageId, Promise<void>>()
 
+// highlighter builds the core once. A core that failed to build is not
+// cached: the next block tries again instead of inheriting the failure.
 function highlighter(): Promise<HighlighterCore> {
   core ??= createHighlighterCore({
     themes: [theme],
     langs: [],
     engine: createJavaScriptRegexEngine({ forgiving: true }),
+  }).catch((error: unknown) => {
+    core = null
+    throw error
   })
   return core
 }
