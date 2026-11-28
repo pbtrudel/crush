@@ -42,23 +42,46 @@
   font-size: 11px;
 }
 
+/* The light state tokens are too pale for 11 px capsule text: the success
+ * green measures 2.29:1 on the white card, the warn amber 2.80, the
+ * business blue 4.22, and the error red 4.38 on the wash it paints. The
+ * light values mix each token with its darkest neighbour, the way
+ * Terminal's palette does, and reach AA: green 5.33, amber 5.85, blue
+ * 5.55 and red 4.91 on the wash. The dark theme keeps the tokens it
+ * already uses, which are legible on its cards. */
 .running {
   background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-state-business-primary);
+  color: color-mix(in srgb, var(--dsw-static-deepseek-500) 75%, var(--dsw-static-deepseek-900));
 }
 
 .done {
   background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-state-success-primary);
+  color: color-mix(in srgb, var(--dsw-static-green-500) 45%, var(--dsw-static-green-900));
 }
 
 .error {
   background: var(--dsw-static-red-400-a12);
-  color: var(--dsw-alias-state-error-primary);
+  color: color-mix(in srgb, var(--dsw-static-red-600) 80%, var(--dsw-static-red-900));
 }
 
 .interrupted {
   background: var(--dsw-alias-bg-layer-2);
+  color: color-mix(in srgb, var(--dsw-static-amber-600) 55%, var(--dsw-static-amber-900));
+}
+
+:global(html[data-ds-theme='dark']) .running {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+:global(html[data-ds-theme='dark']) .done {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+:global(html[data-ds-theme='dark']) .error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+:global(html[data-ds-theme='dark']) .interrupted {
   color: var(--dsw-alias-state-warn-primary);
 }
 

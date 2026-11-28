@@ -38,6 +38,15 @@ body {
   background: var(--dsw-alias-bg-base);
 }
 
+/* DSH's light tertiary label is 3.73:1 on the white surfaces the chat draws
+ * its gutters, hunk headers, section labels and terminal prompt on, below
+ * AA. One app-wide override moves it to the secondary step (5.80:1 on
+ * white); the dark theme's selector is more specific and keeps its own
+ * value. app.test.ts pins the light ratio on every surface it labels. */
+body {
+  --dsw-alias-label-tertiary: var(--dsw-static-neutral-bluish-700);
+}
+
 #root {
   height: 100%;
 }
