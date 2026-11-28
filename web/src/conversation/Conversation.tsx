@@ -1,5 +1,5 @@
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual'
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { SessionStatus } from '../api/wire'
 import MessageView, { drawsNothing } from '../chat/MessageView'
@@ -211,6 +211,25 @@ function Log({
     if (shape.current !== null) {
       shape.current.scrollTop = element.scrollTop
     }
+  }, [])
+
+  // A streamed delta lands in a row's own memoised view, which does not
+  // re-render this component: the layout effect above cannot see the row
+  // grow. The observer reads the mutation before the browser paints, so a
+  // pinned log follows a child-only tick too. A reader who scrolled up
+  // leaves pinned false and the view alone.
+  useEffect(() => {
+    const element = log.current
+    if (element === null) {
+      return
+    }
+    const observer = new MutationObserver(() => {
+      if (pinned.current) {
+        element.scrollTop = element.scrollHeight
+      }
+    })
+    observer.observe(element, { characterData: true, childList: true, subtree: true })
+    return () => observer.disconnect()
   }, [])
 
   const jumpToEnd = useCallback(() => {
