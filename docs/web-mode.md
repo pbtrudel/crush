@@ -2,8 +2,8 @@
 
 > **Note:** The web UI is being rebuilt. The M1 shell has landed: `crush
 > --web`, `/web`, the `WEB` badge and the gateway all work, and the tab now
-> serves the rebuilt shell (the sessions sidebar, the conversation, the
-> composer and the connection status) instead of a placeholder notice.
+> serves the rebuilt shell (the sessions sidebar, the conversation and the
+> connection status) instead of a placeholder notice.
 > Everything the rest of this document says about the old tab is history: the
 > holodeck stage, the chronoline, the file drawer, the display settings and
 > the pin/browse toggle were removed with the old UI. Display settings are
