@@ -120,13 +120,37 @@ describe('parseAnsi', () => {
     expect(parseAnsi('\x1bXsos\x1b\\after')).toEqual([[{ text: 'after', classes: [] }]])
   })
 
+  it('costs one line for a string sequence that is never terminated', () => {
+    expect(parseAnsi('a\x1bPq\nb\nc\n')).toEqual([
+      [{ text: 'a', classes: [] }],
+      [{ text: 'b', classes: [] }],
+      [{ text: 'c', classes: [] }],
+      [],
+    ])
+    expect(parseAnsi('x\x1bP\u009cy')).toEqual([[{ text: 'xy', classes: [] }]])
+  })
+
+  it('drops a CSI a line break cut in half', () => {
+    expect(parseAnsi('\x1b[3\nnext')).toEqual([[], [{ text: 'next', classes: [] }]])
+  })
+
+  it('reads an SGR only from a plain parameter list', () => {
+    expect(parseAnsi('\x1b[31m\x1b[0 mx')).toEqual([[{ text: 'x', classes: ['fg-red'] }]])
+  })
+
+  it('drops an 8-bit CSI with its parameters', () => {
+    expect(parseAnsi('a\u009b31mb')).toEqual([[{ text: 'ab', classes: [] }]])
+  })
+
   it('costs one line for a title that is never terminated', () => {
     expect(parseAnsi('\x1b]0;title\nnext')).toEqual([[], [{ text: 'next', classes: [] }]])
     expect(parseAnsi('\x1b]0;title\u009cnext')).toEqual([[{ text: 'next', classes: [] }]])
   })
 
   it('drops the C1 controls a terminal takes for bytes', () => {
-    expect(parseAnsi('a\u0085b\u009bc\u009cd')).toEqual([[{ text: 'abcd', classes: [] }]])
+    // The single-byte CSI has a case of its own: it swallows its final
+    // byte, so only the controls that are not a sequence are left here.
+    expect(parseAnsi('a\u0085b\u009cc')).toEqual([[{ text: 'abc', classes: [] }]])
   })
 
   it('reads a colon sub-parameter group as one code', () => {

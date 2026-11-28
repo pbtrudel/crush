@@ -16,21 +16,24 @@ interface SgrState {
 
 // sequence matches every escape a terminal consumes, in the order that
 // keeps their bodies apart: a CSI (parameters, intermediates, a final
-// byte), an OSC (a title or a hyperlink, ended by BEL, ST or the C1 ST),
-// one of the other string sequences (DCS, SOS, PM, APC), and every other
-// escape (intermediates and one final byte). Only an SGR CSI changes the
-// style; the rest vanish.
+// byte), the same CSI in its 8-bit C1 form, an OSC (a title or a
+// hyperlink), one of the other string sequences (DCS, SOS, PM, APC), and
+// every other escape (intermediates and one final byte). Every string
+// sequence is bound to one line, so a broken one costs a line instead of
+// the rest of the output. Only an SGR CSI changes the style; the rest
+// vanish, the 8-bit CSI among them: it is stripped whole rather than read
+// as style, because nothing in a build log emits one as SGR.
 const sequence =
-  /\x1b\[([0-?]*)([ -/]*)([@-~])|\x1b\][^\x07\x1b\n\u009c]*(?:\x07|\x1b\\|\u009c)?|\x1b[P_^X][^\x1b]*(?:\x1b\\)?|\x1b[ -/]*[0-~]/g
+  /\x1b\[([0-?]*)([ -/]*)([@-~])|\u009b[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b\n\u009c]*(?:\x07|\x1b\\|\u009c)?|\x1b[P_^X][^\x1b\n\u009c]*(?:\x1b\\|\u009c)?|\x1b(?!\[)[ -/]*[0-~]/g
 
 // sgr is the parameter string of a real SGR. Anything else that ends in m
 // (a keyboard report, a mode set) is an escape to strip, not a style.
 const sgr = /^[0-9;:]*$/
 
-// partialCsi is a CSI the output was cut inside of. The scanner needs its
-// final byte, which never arrived, so the escape that opened it goes with
-// the parameters it had read.
-const partialCsi = /\x1b\[[0-?]*[ -/]*$/
+// partialCsi is a CSI the output was cut inside of, at a line break or at
+// the end of the text. The scanner needs its final byte, which never
+// arrived, so the escape that opened it goes with the parameters it read.
+const partialCsi = /\x1b\[[0-?]*[ -/]*(?=\n|$)/g
 
 // controls removes the bytes no terminal draws: a bare escape the scanner
 // could not pair with a sequence, and the C0 and C1 controls. A lone
@@ -165,7 +168,9 @@ export function parseAnsi(input: string): AnsiSpan[][] {
   for (const match of source.matchAll(sequence)) {
     push(source.slice(last, match.index))
     last = (match.index ?? 0) + match[0].length
-    if (match[3] === 'm' && sgr.test(match[1] ?? '')) {
+    // A plain parameter list with no intermediates is the only shape an
+    // SGR takes; anything else that ends in m is an escape to strip.
+    if (match[3] === 'm' && (match[2] ?? '') === '' && sgr.test(match[1] ?? '')) {
       applySgr(state, match[1] ?? '')
     }
   }
