@@ -1,8 +1,9 @@
 import { clsx } from 'clsx'
 import { useContext, useEffect, useSyncExternalStore, type ReactNode } from 'react'
 
-import type { WebError } from '../../api/wire'
+import type { SessionStatus, WebError } from '../../api/wire'
 import Markdown from '../../chat/markdown/Markdown'
+import { isTurnActive } from '../../chat/toolStatus'
 import type { WireMessage } from '../../store/app'
 import { ToolEnvironmentContext, type ChatStore } from '../environment'
 import { firstLine, stringField } from '../input'
@@ -34,6 +35,14 @@ function noError(): null {
   return null
 }
 
+function neverKnown(): false {
+  return false
+}
+
+function noStatus(): undefined {
+  return undefined
+}
+
 // useChildMessages follows a watched child's snapshot and live messages. The
 // store keeps them in the session entry the watch opens, so the row reads the
 // same data any session has. The selector answers the entry's own array, so
@@ -43,6 +52,28 @@ function useChildMessages(store: ChatStore | null, sessionID: string): WireMessa
     store === null ? noSubscribe : store.subscribe,
     () => store?.get().sessionData[sessionID]?.messages,
     noMessages,
+  )
+}
+
+// useKnownChild answers whether the gateway has announced this child's
+// session. A watch sent before then answers unknown_session and is never
+// retried, so it is the row's signal that a subscription can be taken.
+function useKnownChild(store: ChatStore | null, sessionID: string): boolean {
+  return useSyncExternalStore(
+    store === null ? noSubscribe : store.subscribe,
+    () => store?.get().knownChildren.includes(sessionID) === true,
+    neverKnown,
+  )
+}
+
+// useChildStatus follows the child's own run state. A subagent keeps working
+// after its parent's tool row answered, so the row's status is not the
+// child's.
+function useChildStatus(store: ChatStore | null, sessionID: string): SessionStatus | undefined {
+  return useSyncExternalStore(
+    store === null ? noSubscribe : store.subscribe,
+    () => store?.get().childStatuses[sessionID],
+    noStatus,
   )
 }
 
@@ -65,13 +96,14 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
   const store = environment.store
   const sessionID = childSessionId(messageId, call.id)
   const nests = store !== null && environment.renderTranscript !== null && depth < maxAgentDepth
+  const known = useKnownChild(nests ? store : null, sessionID)
   // A watch sent before the subagent's session exists answers unknown_session
-  // and is never retried, so the row waits until the call has started: its
-  // input is complete, which is the moment the coordinator creates the
-  // session. A settled call is watched the same way, since its session
-  // outlives the run.
-  const started = call.finished || result !== undefined
-  const watching = nests && started
+  // and is never retried, so the row subscribes only on evidence that it
+  // exists: the child's own created or updated session frame (or a bootstrap
+  // that listed it), or its call's answer, which proves the run happened. A
+  // finished tool call is not evidence — the provider publishes it before the
+  // tool body runs, and a dispatch creates the session in a goroutine.
+  const watching = nests && (known || result !== undefined)
   // The cleanup runs on close, on unmount and on StrictMode's extra pass, so
   // the watch is dropped exactly once for each watch taken.
   useEffect(() => {
@@ -83,6 +115,7 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
   }, [watching, store, sessionID])
   const messages = useChildMessages(nests ? store : null, sessionID)
   const error = useChildError(nests ? store : null, sessionID)
+  const childStatus = useChildStatus(nests ? store : null, sessionID)
   // What the child block draws: its transcript once its snapshot lands, the
   // gateway's refusal if the subscription failed, and a loading note until
   // either arrives. A refusal is shown only while nothing loaded: the store
@@ -91,14 +124,17 @@ function AgentBody({ call, result, status, messageId, depth }: ToolBodyProps) {
   let child: ReactNode = null
   if (nests) {
     if (messages !== undefined && messages.length > 0) {
-      child = environment.renderTranscript?.(messages, depth + 1, status === 'running')
+      // The child's own run decides what its transcript draws; the parent's
+      // status still counts while it runs, because a correlated snapshot may
+      // not have landed yet.
+      child = environment.renderTranscript?.(messages, depth + 1, isTurnActive(childStatus) || status === 'running')
     } else if (error !== null) {
       child = (
         <p className={clsx(styles.note, styles.errorText)} role="alert">
           {`The subagent could not be loaded: ${error.error === '' ? error.code : error.error}`}
         </p>
       )
-    } else if (started) {
+    } else if (watching) {
       child = <p className={styles.note}>Loading the subagent…</p>
     }
   }

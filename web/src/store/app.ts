@@ -5,6 +5,7 @@ import type {
   SessionEvent,
   SessionRow,
   SessionSnapshot,
+  SessionStatus,
   SessionStatusPayload,
   WebError,
   WireMessage,
@@ -54,6 +55,16 @@ export interface AppState {
   // watchedChildren are the subagent sessions an open tool row follows.
   // They are subscribed after the live sessions and never get a row.
   watchedChildren: string[]
+  // knownChildren are the subagent sessions the gateway has announced. A
+  // watch sent before the child exists answers unknown_session and is never
+  // retried, so an open tool row subscribes only once its child is listed
+  // here, or once its own call has answered.
+  knownChildren: string[]
+  // childStatuses is the run state of each watched child, taken from its own
+  // snapshot and its own status frames. A subagent keeps working after its
+  // parent's tool row has answered, so the parent's status cannot say whether
+  // the child's last turn is still being written.
+  childStatuses: Record<string, SessionStatus>
   lastSeen: Record<string, number>
   // error is the last web_error frame the gateway sent. The frame is global,
   // so session_id names the session it concerns and an empty one concerns
@@ -107,6 +118,8 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     sessionData: {},
     generation: 0,
     watchedChildren: [],
+    knownChildren: [],
+    childStatuses: {},
     lastSeen: readSeen(storage),
     error: null,
     gatewayClosing: false,
@@ -189,21 +202,31 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
         return patchSession(state, ticket.sessionId, { loadingOlder: false, olderError: error })
       })
     },
+    // watchChild is not ref-counted: a subagent's session id names one tool
+    // call and one message, so each call owns one watch for as long as its
+    // row is open, and a second one for the same id is the same watch.
     watchChild: (sessionID: string) => {
       store.set((state) =>
         state.watchedChildren.includes(sessionID) ? {} : { watchedChildren: [...state.watchedChildren, sessionID] },
       )
     },
-    // unwatchChild also drops the child's messages: nobody draws them, and
-    // the next watch subscribes afresh and gets a new snapshot.
+    // unwatchChild also drops the child's messages and its run state: nobody
+    // draws them, and the next watch subscribes afresh and gets a new
+    // snapshot. The state goes even when the watch is already gone, because a
+    // selection change clears the watches before the rows unmount.
     unwatchChild: (sessionID: string) => {
       store.set((state) => {
+        const childStatuses = withoutStatus(state.childStatuses, sessionID)
         if (!state.watchedChildren.includes(sessionID)) {
-          return {}
+          return childStatuses === state.childStatuses ? {} : { childStatuses }
         }
         const sessionData = { ...state.sessionData }
         delete sessionData[sessionID]
-        return { watchedChildren: state.watchedChildren.filter((id) => id !== sessionID), sessionData }
+        return {
+          watchedChildren: state.watchedChildren.filter((id) => id !== sessionID),
+          sessionData,
+          childStatuses,
+        }
       })
     },
   })
@@ -241,12 +264,22 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
   // One value for the whole bootstrap: every entry the tab keeps belongs to
   // the new generation from here on, and no ticket can name it.
   const generation = state.generation + 1
+  // A bootstrap lists only top-level sessions, so it cannot say which
+  // children are gone: what the tab already knew stays known, or a watch
+  // that outlives a reconnect would never be taken again.
+  let knownChildren = state.knownChildren
+  for (const row of payload.sessions) {
+    if (isChildSession(row)) {
+      knownChildren = rememberChild(knownChildren, row.id)
+    }
+  }
   return {
     ...state,
     bootstrap: payload,
     sessions: rows,
     selectedSessionId,
     generation,
+    knownChildren,
     sessionData: resetPages(state.sessionData, generation),
     // The session a bootstrap opens was on screen before it was selected, so
     // it starts seen instead of unread. Without this, switching away from it
@@ -265,8 +298,9 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       const snapshot = frame.payload as SessionSnapshot
       const id = snapshot.session_id
       const entity = snapshot.session
+      const childEntity = entity !== undefined && isChildSession(entity)
       let sessions = state.sessions
-      if (entity !== undefined && isChildSession(entity)) {
+      if (childEntity) {
         // A subagent's session opens only for the tool row that asked.
         if (!state.watchedChildren.includes(id)) {
           return state
@@ -288,6 +322,12 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         ...state,
         sessions,
         generation,
+        // A child's snapshot is its own answer, so a refusal about that
+        // session is stale now; the tab shows it on the parent's tool row.
+        error: childEntity && state.error?.session_id === id ? null : state.error,
+        childStatuses: childEntity
+          ? { ...state.childStatuses, [id]: snapshot.busy ? 'running' : 'idle' }
+          : state.childStatuses,
         sessionData: {
           ...state.sessionData,
           [id]: {
@@ -306,9 +346,16 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
     }
     case 'session_status': {
       const payload = frame.payload as SessionStatusPayload
+      // A child has no row to carry its status, so the frames are kept
+      // beside the watch instead: its own run decides what its transcript
+      // draws, which outlives its parent's tool call.
+      const childStatuses = state.watchedChildren.includes(payload.session_id)
+        ? { ...state.childStatuses, [payload.session_id]: payload.status }
+        : state.childStatuses
       return {
         ...state,
         sessions: state.sessions.map((row) => (row.id === payload.session_id ? { ...row, status: payload.status } : row)),
+        childStatuses,
       }
     }
     case 'session': {
@@ -321,10 +368,16 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
       if (id === '') {
         return state
       }
-      // A subagent's session is never a row: its created and updated frames
-      // are dropped, and a deleted one only clears what the tab held.
-      if (event.type !== 'deleted' && isChildSession(event.payload)) {
-        return state
+      // A subagent's session is never a row, but it is a session: a deleted
+      // one clears what the tab held, and a created or updated one says the
+      // child exists, which is what lets its tool row subscribe without
+      // answering unknown_session.
+      if (isChildSession(event.payload)) {
+        if (event.type === 'deleted') {
+          return dropSession(state, id)
+        }
+        const knownChildren = rememberChild(state.knownChildren, id)
+        return knownChildren === state.knownChildren ? state : { ...state, knownChildren }
       }
       // A session deleted in another tab leaves this one the same way a
       // local delete does: row, messages, selection and seen mark all go.
@@ -506,9 +559,9 @@ function mergeSessionEvent(rows: SessionRow[], event: SessionEvent): SessionRow[
 
 // dropSession is the one cleanup for a session that is gone, whether the
 // tab deleted it or another tab did: the row, its messages, a watch on it,
-// a selection pointing at it and its seen mark. The guards in reduceFrame
-// then ignore a later snapshot, message or run end for it, so no orphan
-// data comes back.
+// its run state, a selection pointing at it and its seen mark. The guards in
+// reduceFrame then ignore a later snapshot, message or run end for it, so no
+// orphan data comes back.
 function dropSession(state: AppState, sessionID: string): AppState {
   const sessionData = { ...state.sessionData }
   delete sessionData[sessionID]
@@ -517,14 +570,45 @@ function dropSession(state: AppState, sessionID: string): AppState {
     ...state,
     sessions: state.sessions.filter((row) => row.id !== sessionID),
     sessionData,
-    // A deleted subagent stops holding a subscription slot as well.
+    // A deleted subagent stops holding a subscription slot as well, and the
+    // tab forgets it existed.
     watchedChildren: state.watchedChildren.includes(sessionID)
       ? state.watchedChildren.filter((id) => id !== sessionID)
       : state.watchedChildren,
+    knownChildren: state.knownChildren.includes(sessionID)
+      ? state.knownChildren.filter((id) => id !== sessionID)
+      : state.knownChildren,
+    childStatuses: withoutStatus(state.childStatuses, sessionID),
     selectedSessionId,
     lastSeen: withoutKey(state.lastSeen, sessionID),
     error: errorForSelection(state.error, selectedSessionId),
   }
+}
+
+// maxKnownChildren bounds the subagent sessions the tab remembers. The list
+// is only a hint that a child exists, so dropping the oldest costs one row
+// its early watch, and only for a call old enough that its row has closed.
+export const maxKnownChildren = 256
+
+// rememberChild adds a child session id, keeping the input when it was
+// already there so a repeated session frame changes nothing.
+function rememberChild(known: string[], sessionID: string): string[] {
+  if (known.includes(sessionID)) {
+    return known
+  }
+  const next = [...known, sessionID]
+  return next.length > maxKnownChildren ? next.slice(next.length - maxKnownChildren) : next
+}
+
+// withoutStatus drops one child's run state, keeping the input when it was
+// absent so a caller can tell "changed" from "already gone".
+function withoutStatus(statuses: Record<string, SessionStatus>, sessionID: string): Record<string, SessionStatus> {
+  if (!(sessionID in statuses)) {
+    return statuses
+  }
+  const next = { ...statuses }
+  delete next[sessionID]
+  return next
 }
 
 // withoutKey drops one entry, keeping the input when the key was absent so a

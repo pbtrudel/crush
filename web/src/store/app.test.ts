@@ -8,6 +8,7 @@ import {
   emptySessionData,
   isUnread,
   isUnreadRow,
+  maxKnownChildren,
   maxSubscriptions,
   reduceBootstrap,
   reduceFrame,
@@ -711,7 +712,7 @@ function msg(id: string, text: string, sessionID = 's1'): WireMessage {
   }
 }
 
-function snapshot(sessionID: string, messages: WireMessage[], parent = ''): ParsedFrame {
+function snapshot(sessionID: string, messages: WireMessage[], parent = '', busy = false): ParsedFrame {
   return {
     seq: 1,
     type: 'session_snapshot',
@@ -721,11 +722,23 @@ function snapshot(sessionID: string, messages: WireMessage[], parent = ''): Pars
       session: { id: sessionID, parent_session_id: parent, title: 'x', message_count: messages.length, updated_at: 1 },
       messages,
       has_more: true,
-      busy: false,
+      busy,
       queued: [],
       files: [],
     },
   }
+}
+
+// childFrame is the session frame the gateway publishes when it creates or
+// updates a subagent's session. It is a global frame, so it reaches a tab
+// that only follows the parent.
+function childFrame(type: 'created' | 'updated' | 'deleted'): ParsedFrame {
+  return { seq: 4, type: 'session', payload: { type, payload: child } }
+}
+
+// statusFrame is the run state the gateway publishes for a session.
+function statusFrame(sessionID: string, status: string, seq = 5): ParsedFrame {
+  return { seq, type: 'session_status', payload: { session_id: sessionID, status } }
 }
 
 // messageEventFrame is one created, updated or deleted message carrying the
@@ -930,6 +943,138 @@ describe('subagent sessions', () => {
     store.watchChild(child.id)
     store.selectSession('s2')
     expect(store.get().watchedChildren).toEqual([])
+  })
+
+  it('records a child session the gateway created, without a row', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('created'))
+    // The tab has to know the child exists: a watch sent before then answers
+    // unknown_session and is never retried.
+    expect(store.get().knownChildren).toEqual([child.id])
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('records a child an update names, so a missed created frame still counts', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('updated'))
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('seeds the children it knows from a bootstrap that lists one', () => {
+    const state = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrapPayload([top, child]))
+    expect(state.knownChildren).toEqual([child.id])
+    expect(state.sessions.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  it('keeps the children it already knew across a bootstrap', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('created'))
+    // A resync lists only top-level sessions, so it cannot say which children
+    // are gone; a watch that outlives the reconnect must not be dropped.
+    store.applyBootstrap(bootstrapPayload([top]))
+    expect(store.get().knownChildren).toEqual([child.id])
+  })
+
+  it('forgets a known child the workspace deleted', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(childFrame('created'))
+    store.applyFrame(childFrame('deleted'))
+    expect(store.get().knownChildren).toEqual([])
+  })
+
+  it('forgets the oldest child it knew past the cap', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    const ids = Array.from({ length: maxKnownChildren + 1 }, (_, index) => `a$$tc-${index}`)
+    for (const id of ids) {
+      store.applyFrame({
+        seq: 4,
+        type: 'session',
+        payload: { type: 'created', payload: { ...child, id } },
+      })
+    }
+    const known = store.get().knownChildren
+    expect(known).toHaveLength(maxKnownChildren)
+    expect(known).not.toContain(ids[0])
+    expect(known).toContain(ids[ids.length - 1])
+  })
+})
+
+describe("a watched child's run state", () => {
+  it('takes the state from the snapshot the watch answers with', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    expect(store.get().childStatuses[child.id]).toBe('running')
+
+    store.watchChild('a2$$tc-2')
+    store.applyFrame(snapshot('a2$$tc-2', [msg('c2', 'done', 'a2$$tc-2')], 's1', false))
+    expect(store.get().childStatuses['a2$$tc-2']).toBe('idle')
+  })
+
+  it('follows the status frames of a watched child', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    store.applyFrame(statusFrame(child.id, 'pending_interaction'))
+    expect(store.get().childStatuses[child.id]).toBe('pending_interaction')
+    store.applyFrame(statusFrame(child.id, 'idle', 6))
+    expect(store.get().childStatuses[child.id]).toBe('idle')
+  })
+
+  it('ignores the status of a child nobody watches', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.applyFrame(statusFrame('a9$$tc-9', 'running'))
+    expect(store.get().childStatuses).toEqual({})
+  })
+
+  it("drops the state when the watch ends", () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    store.unwatchChild(child.id)
+    expect(store.get().childStatuses).toEqual({})
+  })
+
+  it("drops the state of a child the workspace deleted", () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1', true))
+    store.applyFrame(childFrame('deleted'))
+    expect(store.get().childStatuses).toEqual({})
+    expect(store.get().sessionData[child.id]).toBeUndefined()
+  })
+})
+
+describe('a refusal about a subagent session', () => {
+  it("is cleared when the child's snapshot lands", () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(
+      frame('web_error', { session_id: child.id, code: 'unknown_session', error: 'no such session' }, 6),
+    )
+    expect(store.get().error?.code).toBe('unknown_session')
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().error).toBeNull()
+  })
+
+  it('leaves an error about another session alone', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(frame('web_error', { session_id: 's1', code: 'snapshot_failed', error: 'no' }, 6))
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+    expect(store.get().error?.code).toBe('snapshot_failed')
   })
 })
 
