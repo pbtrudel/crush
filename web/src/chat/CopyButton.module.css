@@ -1,0 +1,14 @@
+.copy {
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary));
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.copy:hover {
+  color: var(--dsw-alias-label-primary);
+}

@@ -10,6 +10,9 @@ its header comment and lists what changed:
 - The CSS token sheets under `web/src/theme/` (`packages/client/ui-theme`).
 - `web/src/chat/markdown/parse.ts`
   (`packages/client/ui-primitives/src/markdown/parse.ts`).
+- `web/src/chat/markdown/highlighter.ts`, in part
+  (`packages/client/ui-primitives/src/markdown/highlight.ts`).
+- `web/src/theme/shiki.css` (`packages/client/ui-theme/src/styles/shiki.css`).
 
 MIT License
 
