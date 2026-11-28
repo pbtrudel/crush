@@ -1,4 +1,5 @@
 import { clsx } from 'clsx'
+import { memo } from 'react'
 
 import type { WireMessage } from '../store/app'
 import ToolCallRow from './ToolCallRow'
@@ -26,11 +27,17 @@ interface ToolCallPart {
   name: string
 }
 
+// noToolResults is the one empty set: a fresh one on every render would be a
+// new prop and undo the memo.
+const noToolResults: ReadonlySet<string> = new Set<string>()
+
 // MessageView renders one message as plain text, one collapsed block per
 // reasoning part and one row per tool call. Markdown and the tool views
 // arrive in M2: what is here is what the wire carries, nothing invented.
-// Every part is rendered through React, so text stays text.
-export default function MessageView({ message, toolResults = new Set<string>() }: MessageViewProps) {
+// Every part is rendered through React, so text stays text. It is memoised
+// because the conversation changes on every streamed token: a message whose
+// own object and result set are unchanged has nothing new to draw.
+function MessageView({ message, toolResults = noToolResults }: MessageViewProps) {
   const texts: string[] = []
   const reasonings: string[] = []
   const calls: ToolCallPart[] = []
@@ -87,3 +94,5 @@ export default function MessageView({ message, toolResults = new Set<string>() }
     </article>
   )
 }
+
+export default memo(MessageView)

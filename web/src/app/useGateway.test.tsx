@@ -3,11 +3,11 @@ import { act, render, renderHook, screen, waitFor } from '@testing-library/react
 import { describe, expect, it, vi } from 'vitest'
 
 import App from '../App'
-import { HttpError } from '../api/http'
+import { ApiClient, HttpError } from '../api/http'
 import { StreamClient } from '../api/stream'
-import type { SessionRow, SessionStatus } from '../api/wire'
+import { bootstrapSchema, type SessionRow, type SessionStatus } from '../api/wire'
 import { maxSubscriptions } from '../store/app'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from './storage'
 import { useGateway } from './useGateway'
 
 class FakeSocket {
@@ -39,26 +39,68 @@ class FakeSocket {
   open(): void {
     this.onopen?.()
   }
+
+  // receive plays one frame as the gateway would send it.
+  receive(frame: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(frame) })
+  }
 }
 
-// harness builds the options useGateway takes. Each call records the socket
-// the stream opened, so a test can read what the tab sent and whether it
-// closed the connection.
-function harness(
-  hash: string,
-  authenticated: boolean,
-  health: () => Promise<unknown> = async () => ({ ok: true }),
-) {
-  const client = {
-    authenticated,
-    authenticate: vi.fn(async () => undefined),
-    get: vi.fn(async (_path: string) => health()),
-    wsProtocols: () => ['crush.v2', 'crush.auth.token'],
-    clearToken: vi.fn(),
-  }
+// A bootstrap the committed wire schema accepts: the stream validates every
+// frame, so the fixture carries the fields the gateway sends.
+const bootstrap = {
+  version: 'x',
+  working_dir: '/w',
+  current_session_id: '',
+  sessions: [],
+  model: { id: 'm', name: 'n', provider: 'p', context_window: 1, agent_ready: true },
+  agent_ready: true,
+  permission_mode: 'standard',
+  input_mode: 'code',
+  lsp: {},
+  mcp: {},
+  agent_runs: [],
+}
+
+// Health answers one /api/health request. A rejected HttpError becomes the
+// response the gateway would send; any other rejection is a network failure
+// that never reached a gateway.
+type HealthAnswer = () => Promise<unknown>
+
+// harness builds the options useGateway takes around a real ApiClient whose
+// fetch is stubbed: the hook runs the client the tab boots with, and only the
+// network is replaced. Each call records the socket the stream opened, so a
+// test can read what the tab sent and whether it closed the connection.
+function harness(hash: string, storedToken: string | null, answer: HealthAnswer = async () => ({ ok: true })) {
+  const storage = memoryStorage(storedToken === null ? {} : { 'crush.token': storedToken })
+  const health = vi.fn(answer)
+  const fetchImpl = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+    const path = String(input)
+    if (path === '/api/auth') {
+      return new Response(null, { status: 204 })
+    }
+    if (path === '/api/health') {
+      try {
+        return new Response(JSON.stringify(await health()), { status: 200 })
+      } catch (cause) {
+        if (!(cause instanceof HttpError)) {
+          throw cause
+        }
+        return new Response(JSON.stringify({ code: cause.code, error: cause.message }), { status: cause.status })
+      }
+    }
+    return new Response('{}', { status: 404 })
+  })
+  const client = new ApiClient({ storage, fetchImpl })
+  const authenticate = vi.spyOn(client, 'authenticate')
+  const clearToken = vi.spyOn(client, 'clearToken')
   const sockets: FakeSocket[] = []
   return {
     client,
+    storage,
+    health,
+    authenticate,
+    clearToken,
     sockets,
     get socket() {
       return sockets[0]
@@ -83,7 +125,7 @@ function sessionRow(id: string, status: SessionStatus = 'idle'): SessionRow {
 
 describe('useGateway', () => {
   it('becomes ready and starts the stream', async () => {
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
     expect(result.current.stream.state).toBe('connecting')
@@ -92,14 +134,14 @@ describe('useGateway', () => {
   })
 
   it('stops on the unauthorized screen without a token', async () => {
-    const h = harness('', false)
+    const h = harness('', null)
     const { result } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('unauthorized'))
     expect(h.sockets).toHaveLength(0)
   })
 
   it('reports an unreachable gateway as a network error, not a token one', async () => {
-    const h = harness('#t=abc123', false, async () => Promise.reject(new Error('offline')))
+    const h = harness('#t=abc123', null, async () => Promise.reject(new Error('offline')))
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('unreachable'))
     expect(result.current.error).toBe('offline')
@@ -108,13 +150,13 @@ describe('useGateway', () => {
   })
 
   it('shows the unauthorized screen when the handshake is refused', async () => {
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
-    h.client.get.mockRejectedValueOnce(new HttpError(401, 'unauthorized', 'missing or invalid token'))
+    h.health.mockRejectedValueOnce(new HttpError(401, 'unauthorized', 'missing or invalid token'))
     act(() => h.socket.fail(1006))
     await waitFor(() => expect(result.current.state).toBe('unauthorized'))
-    expect(h.client.clearToken).toHaveBeenCalled()
+    expect(h.clearToken).toHaveBeenCalled()
     // The stream is stopped too: no backoff loop keeps offering a token the
     // gateway has already refused.
     expect(result.current.stream.state).toBe('closed')
@@ -122,64 +164,64 @@ describe('useGateway', () => {
   })
 
   it('keeps reconnecting when the probe finds a live gateway', async () => {
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
-    h.client.get.mockResolvedValueOnce({ ok: true })
+    h.health.mockResolvedValueOnce({ ok: true })
     act(() => h.socket.fail(1006))
     // The second health call is the probe the close triggered.
-    await waitFor(() => expect(h.client.get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(h.health).toHaveBeenCalledTimes(2))
     expect(result.current.state).toBe('ready')
     expect(result.current.stream.state).toBe('reconnecting')
-    expect(h.client.clearToken).not.toHaveBeenCalled()
+    expect(h.clearToken).not.toHaveBeenCalled()
     unmount()
   })
 
   it('probes again on a later refused handshake after an outage', async () => {
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
     // The gateway is down: the first refused close probes and learns nothing.
-    h.client.get.mockRejectedValueOnce(new Error('offline'))
+    h.health.mockRejectedValueOnce(new Error('offline'))
     act(() => h.socket.fail(1006))
-    await waitFor(() => expect(h.client.get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(h.health).toHaveBeenCalledTimes(2))
     expect(result.current.state).toBe('ready')
     expect(result.current.stream.state).toBe('reconnecting')
 
     // A new gateway answers on the same port with a new token: the next
     // attempt is refused again, and this probe sees the 401.
-    h.client.get.mockRejectedValueOnce(new HttpError(401, 'unauthorized', 'missing or invalid token'))
+    h.health.mockRejectedValueOnce(new HttpError(401, 'unauthorized', 'missing or invalid token'))
     await waitFor(() => expect(h.sockets).toHaveLength(2))
     act(() => h.sockets[1].fail(1006))
     await waitFor(() => expect(result.current.state).toBe('unauthorized'))
-    expect(h.client.get).toHaveBeenCalledTimes(3)
-    expect(h.client.clearToken).toHaveBeenCalled()
+    expect(h.health).toHaveBeenCalledTimes(3)
+    expect(h.clearToken).toHaveBeenCalled()
     expect(result.current.stream.state).toBe('closed')
     unmount()
   })
 
   it('keeps reconnecting when the probe cannot reach the gateway', async () => {
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
-    h.client.get.mockRejectedValueOnce(new Error('offline'))
+    h.health.mockRejectedValueOnce(new Error('offline'))
     act(() => h.socket.fail(1006))
-    await waitFor(() => expect(h.client.get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(h.health).toHaveBeenCalledTimes(2))
     expect(result.current.state).toBe('ready')
     expect(result.current.stream.state).toBe('reconnecting')
-    expect(h.client.clearToken).not.toHaveBeenCalled()
+    expect(h.clearToken).not.toHaveBeenCalled()
     unmount()
   })
 
   it('strips the launch token from the address bar once it is exchanged', async () => {
     window.history.replaceState(null, '', '/#t=abc123')
-    const h = harness('', false)
+    const h = harness('', null)
     const { result, unmount } = renderHook(() =>
       useGateway({ client: h.client, storage: memoryStorage(), createSocket: h.options.createSocket }),
     )
     try {
       await waitFor(() => expect(result.current.state).toBe('ready'))
-      expect(h.client.authenticate).toHaveBeenCalledWith('abc123')
+      expect(h.authenticate).toHaveBeenCalledWith('abc123')
       expect(window.location.hash).toBe('')
     } finally {
       window.history.replaceState(null, '', '/')
@@ -188,15 +230,15 @@ describe('useGateway', () => {
   })
 
   it('drops a stored token the gateway refuses', async () => {
-    const h = harness('', true, async () => Promise.reject(new HttpError(401, 'unauthorized', 'missing or invalid token')))
+    const h = harness('', 'stored', async () => Promise.reject(new HttpError(401, 'unauthorized', 'missing or invalid token')))
     const { result } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('unauthorized'))
-    expect(h.client.clearToken).toHaveBeenCalled()
+    expect(h.clearToken).toHaveBeenCalled()
     expect(result.current.client).toBe(h.client)
   })
 
   it('subscribes the selected session and every session that is not idle', async () => {
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
     act(() => {
@@ -209,10 +251,24 @@ describe('useGateway', () => {
     unmount()
   })
 
+  it('applies the bootstrap the stream already parsed', async () => {
+    const parse = vi.spyOn(bootstrapSchema, 'parse')
+    const h = harness('#t=abc123', null)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    act(() => h.socket.receive({ seq: 1, type: 'bootstrap', payload: bootstrap }))
+    expect(result.current.store.get().bootstrap?.working_dir).toBe('/w')
+    // One parse per frame: the stream validated the payload, and the store
+    // takes it as it arrives instead of validating it again.
+    expect(parse).toHaveBeenCalledTimes(1)
+    parse.mockRestore()
+    unmount()
+  })
+
   it('unsubscribes a session it no longer wants and sends nothing for an unrelated change', async () => {
     const subscribe = vi.spyOn(StreamClient.prototype, 'subscribe')
     const unsubscribe = vi.spyOn(StreamClient.prototype, 'unsubscribe')
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
     act(() => {
@@ -235,10 +291,35 @@ describe('useGateway', () => {
     unsubscribe.mockRestore()
   })
 
+  it('releases the data of a session it stops following', async () => {
+    const h = harness('#t=abc123', null)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    act(() => {
+      result.current.store.set({ sessions: [sessionRow('s1'), sessionRow('s2')] })
+      result.current.store.selectSession('s1')
+    })
+    act(() =>
+      result.current.store.applyFrame({
+        seq: 1,
+        type: 'session_snapshot',
+        sessionId: 's1',
+        payload: { session_id: 's1', messages: [], has_more: false, files: [], busy: false, queued: [] },
+      }),
+    )
+    expect(result.current.store.get().sessionData.s1).toBeDefined()
+
+    // s1 is idle and no longer selected, so the tab drops its subscription
+    // and with it the page of history it kept for a stream it cannot get.
+    act(() => result.current.store.selectSession('s2'))
+    expect(result.current.store.get().sessionData.s1).toBeUndefined()
+    unmount()
+  })
+
   it('unsubscribes before it subscribes when the wanted set is full', async () => {
     const subscribe = vi.spyOn(StreamClient.prototype, 'subscribe')
     const unsubscribe = vi.spyOn(StreamClient.prototype, 'unsubscribe')
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
     const running = Array.from({ length: maxSubscriptions }, (_, index) => sessionRow(`s${index}`, 'running'))
@@ -261,7 +342,7 @@ describe('useGateway', () => {
   it('closes the socket and removes its network listeners on unmount', async () => {
     const add = vi.spyOn(window, 'addEventListener')
     const remove = vi.spyOn(window, 'removeEventListener')
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const { result, unmount } = renderHook(() => useGateway(h.options))
     await waitFor(() => expect(result.current.state).toBe('ready'))
     const socket = h.socket
@@ -281,7 +362,7 @@ describe('useGateway', () => {
   })
 
   it('leaves one live socket under StrictMode', async () => {
-    const h = harness('#t=abc123', false)
+    const h = harness('#t=abc123', null)
     const wrapper = ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>
     const { result, unmount } = renderHook(() => useGateway(h.options), { wrapper })
     await waitFor(() => expect(result.current.state).toBe('ready'))

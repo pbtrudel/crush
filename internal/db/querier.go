@@ -54,6 +54,11 @@ type Querier interface {
 	ListFileVersionsBySession(ctx context.Context, sessionID string) ([]ListFileVersionsBySessionRow, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
+	// The newest page of a session: the gateway's load-older button walks
+	// backwards from it one page at a time. Newest first, so a LIMIT keeps the
+	// newest rows; the caller reverses the page. created_at has one-second
+	// resolution, so rowid breaks ties exactly as ListMessagesBySession does.
+	ListLatestMessagesPage(ctx context.Context, arg ListLatestMessagesPageParams) ([]Message, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
 	ListMCPDisabledServers(ctx context.Context) ([]string, error)
 	ListMCPEnabledServers(ctx context.Context) ([]string, error)
@@ -67,11 +72,27 @@ type Querier interface {
 	// created_at has one-second resolution, so a few messages preceding the
 	// summary can come back too; the caller slices from the summary by ID.
 	ListMessagesBySessionFromSummary(ctx context.Context, arg ListMessagesBySessionFromSummaryParams) ([]Message, error)
+	// One page of a session older than the given message, newest first; the
+	// caller reverses it. The row-value comparison matches ListMessagesBySession's
+	// created_at, rowid order exactly, so paging visits the same rows in the same
+	// order as reading the whole transcript. The caller asks for one row more
+	// than the page to learn whether older messages remain.
+	ListMessagesPageBefore(ctx context.Context, arg ListMessagesPageBeforeParams) ([]Message, error)
 	ListNewFiles(ctx context.Context) ([]File, error)
 	ListSessionReadFiles(ctx context.Context, sessionID string) ([]ReadFile, error)
 	ListSessions(ctx context.Context) ([]Session, error)
 	ListSkillsDisabled(ctx context.Context) ([]string, error)
 	ListSkillsEnabled(ctx context.Context) ([]string, error)
+	// The tool results that could answer a call made by one of the session's
+	// unfinished assistant rows. A result is created after the assistant row that
+	// made the call, so from_created_at (the oldest unfinished assistant's
+	// created_at) bounds the read and a healthy session reads no tool row at all.
+	// The bound is inclusive because created_at has one-second resolution.
+	ListToolMessagesFrom(ctx context.Context, arg ListToolMessagesFromParams) ([]Message, error)
+	// Where a settle pass starts: the assistant rows that never finished. A
+	// summary is not a turn, so it is never settled. finished_at is written from
+	// the message's finish part, so a NULL means the turn never ended.
+	ListUnfinishedAssistants(ctx context.Context, sessionID string) ([]Message, error)
 	// Backs prompt history, which steps back one entry at a time.
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error

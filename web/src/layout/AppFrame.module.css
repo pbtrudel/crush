@@ -1,5 +1,8 @@
+/* The shell is exactly one viewport tall. Growing with its content instead
+ * would make the page the scroller and leave the conversation log and the
+ * sidebar nav with nothing to scroll. */
 .app {
-  min-height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -52,6 +55,9 @@
 .frame {
   flex: 1;
   display: grid;
+  /* One bounded row: the columns fill the space left under the banner and
+   * scroll inside themselves instead of stretching the page. */
+  grid-template-rows: minmax(0, 1fr);
   grid-template-columns:
     var(--crush-sidebar-width, var(--crush-layout-sidebar-default))
     1px

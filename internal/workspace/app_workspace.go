@@ -113,6 +113,32 @@ func (w *AppWorkspace) ListMessages(ctx context.Context, sessionID string) ([]me
 	return w.app.Messages.List(ctx, sessionID)
 }
 
+// ListMessagesPage reads one page of a session's transcript straight from the
+// message store, so a long session is never loaded whole. It is deliberately
+// not part of [Workspace]: a client/server workspace has no such call, and the
+// gateway falls back to ListMessages there.
+//
+// Paging means reading the store rather than ListSettledMessages, so the
+// settle has to happen first: without it a session a killed process left
+// mid-tool-call would page back a call stuck on "running" forever. Settling
+// the session is what writes the interrupted results the page then carries.
+func (w *AppWorkspace) ListMessagesPage(ctx context.Context, sessionID, before string, limit int) ([]message.Message, bool, error) {
+	if coord := w.app.Agent(); coord != nil {
+		if err := coord.SettleSession(ctx, sessionID); err != nil {
+			return nil, false, err
+		}
+	} else {
+		// A tab can open before the agent exists. No run can own a session
+		// without a coordinator, so the page still settles what a dead
+		// process left behind.
+		noRun := func(string) bool { return false }
+		if err := agent.SettleSession(ctx, w.app.Messages, noRun, sessionID); err != nil {
+			return nil, false, err
+		}
+	}
+	return w.app.Messages.PageMessages(ctx, sessionID, before, limit)
+}
+
 func (w *AppWorkspace) ListUserMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
 	return w.app.Messages.ListUserMessages(ctx, sessionID)
 }

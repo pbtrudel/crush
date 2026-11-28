@@ -6,7 +6,7 @@ import type { ApiClient } from './api/http'
 import type { StreamClient } from './api/stream'
 import { useGateway, type Gateway } from './app/useGateway'
 import { createAppStore } from './store/app'
-import { memoryStorage } from './test/memoryStorage'
+import { memoryStorage } from './app/storage'
 
 vi.mock('./app/useGateway', () => ({ useGateway: vi.fn() }))
 

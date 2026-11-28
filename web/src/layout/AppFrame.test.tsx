@@ -2,9 +2,10 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
+import SessionRow from '../sidebar/SessionRow'
 import { setMediaQueryMatches } from '../test/mediaQueries'
-import AppFrame from './AppFrame'
+import AppFrame, { useSessionChoice } from './AppFrame'
 
 const narrowQuery = '(max-width: 767px)'
 const darkQuery = '(prefers-color-scheme: dark)'
@@ -179,6 +180,100 @@ describe('AppFrame', () => {
       addSpy.mockRestore()
       removeSpy.mockRestore()
     }
+  })
+
+  it('leaves the drawer open when Escape only cancels a rename', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    const { container } = render(
+      <AppFrame
+        sidebar={
+          <SessionRow
+            row={{
+              id: 's1',
+              parent_session_id: '',
+              title: 'Port the parser',
+              message_count: 2,
+              updated_at: 20,
+              status: 'idle',
+            }}
+            selected={false}
+            unread={false}
+            onSelect={vi.fn()}
+            onRename={vi.fn()}
+            onDelete={vi.fn()}
+            onCopyId={vi.fn()}
+            onOpenInTerminal={vi.fn()}
+          />
+        }
+      >
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    await user.click(screen.getByLabelText('Rename session'))
+    expect(screen.getByLabelText('Session title')).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+    // The rename box consumed the key: the drawer is still open and the row
+    // is back to its title.
+    expect(frame?.getAttribute('data-drawer')).toBe('true')
+    expect(screen.queryByLabelText('Session title')).toBeNull()
+
+    await user.keyboard('{Escape}')
+    expect(frame?.getAttribute('data-drawer')).toBe('false')
+  })
+
+  it('closes the drawer and takes focus when the sidebar picks a session', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, true)
+    // The sidebar reaches the frame through the context, because the frame
+    // takes the sidebar as an element.
+    function Picker() {
+      const choose = useSessionChoice()
+      return (
+        <button type="button" onClick={choose}>
+          pick
+        </button>
+      )
+    }
+    const { container } = render(
+      <AppFrame sidebar={<Picker />}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    expect(frame?.getAttribute('data-drawer')).toBe('true')
+
+    await user.click(screen.getByRole('button', { name: 'pick' }))
+    expect(frame?.getAttribute('data-drawer')).toBe('false')
+    // The pick revealed the conversation, so the focus goes there instead of
+    // back to the opener the person has moved past.
+    expect(document.activeElement).toBe(screen.getByRole('main'))
+  })
+
+  it('leaves the columns alone when a session is picked in a wide window', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches(narrowQuery, false)
+    function Picker() {
+      const choose = useSessionChoice()
+      return (
+        <button type="button" onClick={choose}>
+          pick
+        </button>
+      )
+    }
+    const { container } = render(
+      <AppFrame sidebar={<Picker />}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'pick' }))
+    expect(frame?.getAttribute('data-collapsed')).toBe('false')
+    expect(screen.getByText('conversation')).toBeInTheDocument()
   })
 
   it('traps Tab inside the drawer', async () => {

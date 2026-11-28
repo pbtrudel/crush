@@ -69,7 +69,16 @@ func bootstrapJSON(t *testing.T, g *Gateway) string {
 // sessionSnapshotOf builds the payload a subscription answers with.
 func sessionSnapshotOf(t *testing.T, g *Gateway, sessionID string) SessionSnapshot {
 	t.Helper()
-	return g.buildSessionSnapshot(t.Context(), sessionID, "", messagePageSize)
+	return snapshotOf(t, g, sessionID, "", messagePageSize)
+}
+
+// snapshotOf builds the snapshot a subscription answers with, reading the
+// session the way the subscribe handler does before building it.
+func snapshotOf(t *testing.T, g *Gateway, sessionID, before string, limit int) SessionSnapshot {
+	t.Helper()
+	sess, err := g.ws.GetSession(t.Context(), sessionID)
+	require.NoError(t, err)
+	return g.buildSessionSnapshot(t.Context(), sess, before, limit)
 }
 
 // runResult is what the fake agent run reports back to the test goroutine.

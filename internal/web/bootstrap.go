@@ -123,36 +123,29 @@ func (g *Gateway) buildBootstrap(ctx context.Context) Bootstrap {
 	return b
 }
 
-// buildSessionSnapshot reads one session's page of state. A session the
-// workspace no longer has answers an empty snapshot rather than an error:
-// the tab can then forget it instead of reconnecting.
-func (g *Gateway) buildSessionSnapshot(ctx context.Context, sessionID, before string, limit int) SessionSnapshot {
+// buildSessionSnapshot reads one session's page of state from the session the
+// caller already read, so no state can change between the two reads.
+func (g *Gateway) buildSessionSnapshot(ctx context.Context, sess session.Session, before string, limit int) SessionSnapshot {
 	s := SessionSnapshot{
-		SessionID: sessionID,
+		SessionID: sess.ID,
+		Session:   innerPayload(pubsub.Event[session.Session]{Type: pubsub.UpdatedEvent, Payload: sess}),
 		Messages:  []json.RawMessage{},
 		Files:     []FileSummary{},
 		Queued:    []string{},
 	}
-	if sess, err := g.ws.GetSession(ctx, sessionID); err == nil {
-		s.Session = innerPayload(pubsub.Event[session.Session]{Type: pubsub.UpdatedEvent, Payload: sess})
+	if page, hasMore, err := g.messagePage(ctx, sess.ID, before, limit); err == nil {
+		s.Messages = entities(page)
+		s.HasMore = hasMore
 	} else {
-		slog.Debug("Web session snapshot could not load session", "session_id", sessionID, "error", err)
+		slog.Debug("Web session snapshot could not list messages", "session_id", sess.ID, "error", err)
 	}
-	if msgs, err := g.ws.ListMessages(ctx, sessionID); err == nil {
-		if page, hasMore, err := pageMessages(msgs, before, limit); err == nil {
-			s.Messages = entities(page)
-			s.HasMore = hasMore
-		}
-	} else {
-		slog.Debug("Web session snapshot could not list messages", "session_id", sessionID, "error", err)
-	}
-	if files, err := g.fileSummaries(ctx, sessionID); err == nil {
+	if files, err := g.fileSummaries(ctx, sess.ID); err == nil {
 		s.Files = files
 	} else {
-		slog.Debug("Web session snapshot could not list edited files", "session_id", sessionID, "error", err)
+		slog.Debug("Web session snapshot could not list edited files", "session_id", sess.ID, "error", err)
 	}
-	s.Busy = g.ws.AgentIsSessionBusy(sessionID)
-	if q := g.ws.AgentQueuedPromptsList(sessionID); q != nil {
+	s.Busy = g.ws.AgentIsSessionBusy(sess.ID)
+	if q := g.ws.AgentQueuedPromptsList(sess.ID); q != nil {
 		s.Queued = q
 	}
 	return s

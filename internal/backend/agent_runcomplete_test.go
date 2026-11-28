@@ -171,3 +171,4 @@ func TestRunAgent_CancellationPublishesNoErrorTerminal(t *testing.T) {
 func (*errorCoordinator) ListSettledMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
+func (*errorCoordinator) SettleSession(context.Context, string) error { return nil }

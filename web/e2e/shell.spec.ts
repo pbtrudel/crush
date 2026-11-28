@@ -108,3 +108,38 @@ test('opens the drawer at 375px and returns focus to the opener', async ({ page,
   await expect(panel).not.toBeVisible()
   await expect(opener).toBeFocused()
 })
+
+test('scrolls the conversation log instead of the page', async ({ page, app }) => {
+  // "Port the parser" is the longest seeded session, and two messages do not
+  // fill a real window: the viewport is shorter than the shell's own chrome
+  // plus the log's natural height, so the log overflows and the check says
+  // something. The width keeps the sidebar in its column layout.
+  await page.setViewportSize({ width: 900, height: 150 })
+  await page.goto(app.launchUrl)
+  await page.getByText('Port the parser').click()
+  const log = page.getByTestId('conversation-log')
+  await expect(log).toBeVisible()
+  const metrics = await log.evaluate((element) => ({
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+    pageHeight: document.scrollingElement?.scrollHeight ?? 0,
+    viewportHeight: window.innerHeight,
+  }))
+  expect(metrics.scrollHeight, JSON.stringify(metrics)).toBeGreaterThan(metrics.clientHeight)
+  // The page is exactly one viewport tall, so only the panes scroll.
+  expect(metrics.pageHeight, JSON.stringify(metrics)).toBeLessThanOrEqual(metrics.viewportHeight)
+
+  // The session list scrolls in its own column the same way.
+  const nav = await page.getByRole('navigation', { name: 'Sessions' }).evaluate((element) => ({
+    scrollHeight: element.scrollHeight,
+    clientHeight: element.clientHeight,
+  }))
+  expect(nav.scrollHeight, JSON.stringify(nav)).toBeGreaterThan(nav.clientHeight)
+
+  const after = await log.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+    return { logTop: element.scrollTop, pageTop: document.scrollingElement?.scrollTop ?? -1 }
+  })
+  expect(after.logTop).toBeGreaterThan(0)
+  expect(after.pageTop).toBe(0)
+})

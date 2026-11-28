@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Bootstrap, ParsedFrame } from '../api/wire'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
 import {
   connectionNotice,
   createAppStore,
   isUnread,
+  isUnreadRow,
   maxSubscriptions,
   reduceBootstrap,
   reduceFrame,
   visibleError,
   wantedSubscriptions,
+  type AppState,
+  type WireMessage,
 } from './app'
 
 const bootstrap: Bootstrap = {
@@ -32,6 +35,25 @@ const bootstrap: Bootstrap = {
 
 function frame(type: string, payload: unknown, seq = 1, sessionId?: string): ParsedFrame {
   return { seq, type, payload, sessionId }
+}
+
+// snapshotOf applies the snapshot a subscribe answers with. Message frames
+// only arrive behind it, so a test that streams a message seeds one first.
+function snapshotOf(state: AppState, sessionID: string): AppState {
+  return reduceFrame(
+    state,
+    frame('session_snapshot', { session_id: sessionID, messages: [], has_more: false, files: [], busy: false, queued: [] }, 0, sessionID),
+  )
+}
+
+// messageFrame is one created or updated message in the given session.
+function messageFrame(sessionID: string, id: string, type = 'created'): ParsedFrame {
+  return frame(
+    'message',
+    { type, payload: { id, role: 'user', session_id: sessionID, parts: [], created_at: 1, updated_at: 1 } },
+    2,
+    sessionID,
+  )
 }
 
 describe('reduceBootstrap', () => {
@@ -69,7 +91,7 @@ describe('reduceFrame', () => {
   })
 
   it('upserts a message by id', () => {
-    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const start = snapshotOf(reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap), 's1')
     const first = reduceFrame(
       start,
       frame('message', { type: 'created', payload: { id: 'm1', role: 'user', session_id: 's1', parts: [], created_at: 1, updated_at: 1 } }, 2, 's1'),
@@ -82,6 +104,34 @@ describe('reduceFrame', () => {
     )
     expect(second.sessionData.s1.messages).toHaveLength(1)
     expect(second.sessionData.s1.messages[0].updated_at).toBe(9)
+  })
+
+  it('rewrites the last copy of a message the log holds twice', () => {
+    // Older pages are prepended in front of the snapshot, so one id can name
+    // two entries. The upsert has to land on the copy the end of the list
+    // shows, or a streamed update would change a message behind the fold.
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const copy: WireMessage = {
+      id: 'm1',
+      role: 'user',
+      session_id: 's1',
+      parts: [],
+      created_at: 1,
+      updated_at: 1,
+    }
+    const withCopies = {
+      ...start,
+      sessionData: {
+        s1: { messages: [copy, copy], hasMore: false, queued: [], files: [], snapshotSeq: 0 },
+      },
+    }
+    const next = reduceFrame(
+      withCopies,
+      frame('message', { type: 'updated', payload: { ...copy, updated_at: 9 } }, 3, 's1'),
+    )
+    expect(next.sessionData.s1.messages).toHaveLength(2)
+    expect(next.sessionData.s1.messages[0].updated_at).toBe(1)
+    expect(next.sessionData.s1.messages[1].updated_at).toBe(9)
   })
 
   it('upserts a session entity and keeps its status', () => {
@@ -136,7 +186,7 @@ describe('reduceFrame', () => {
   })
 
   it('drops a deleted message', () => {
-    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const start = snapshotOf(reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap), 's1')
     const withMessage = reduceFrame(
       start,
       frame('message', { type: 'created', payload: { id: 'm1', role: 'user', session_id: 's1', parts: [], created_at: 1, updated_at: 1 } }, 2, 's1'),
@@ -175,6 +225,90 @@ describe('reduceFrame', () => {
   })
 })
 
+describe('frames for a session the tab released', () => {
+  it('leaves no entry for a message that was queued behind the unsubscribe', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.applyFrame(
+      frame('session_snapshot', {
+        session_id: 's2',
+        messages: [{ id: 's2-m1', role: 'user', session_id: 's2', parts: [], created_at: 1, updated_at: 1 }],
+        has_more: false,
+        files: [],
+        busy: false,
+        queued: [],
+      }, 1, 's2'),
+    )
+    store.releaseSession('s2')
+    const released = store.get()
+
+    // The gateway had this frame in flight when the tab unsubscribed. It must
+    // not put the page the tab just dropped back into the store.
+    store.applyFrame(messageFrame('s2', 's2-m2'))
+    expect(store.get().sessionData.s2).toBeUndefined()
+    expect(store.get()).toBe(released)
+  })
+
+  it('still applies the first live message of the session on screen', () => {
+    const selected = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    expect(selected.selectedSessionId).toBe('s1')
+    const afterSnapshot = snapshotOf(selected, 's1')
+    const next = reduceFrame(afterSnapshot, messageFrame('s1', 'm1'))
+    expect(next.sessionData.s1.messages.map((message) => message.id)).toEqual(['m1'])
+  })
+
+  it('still applies a message to a session whose snapshot beat its created frame', () => {
+    // A session created and selected in this tab: the subscribe snapshot is
+    // the first frame that mentions it, and it carries the row.
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const created = reduceFrame(
+      start,
+      frame('session_snapshot', {
+        session_id: 's4',
+        session: { id: 's4', title: 'Fresh', message_count: 0, updated_at: 50 },
+        messages: [],
+        has_more: false,
+        files: [],
+        busy: false,
+        queued: [],
+      }, 1, 's4'),
+    )
+    expect(created.sessions.map((row) => row.id)).toEqual(['s4', 's1', 's2'])
+    const next = reduceFrame(created, messageFrame('s4', 's4-m1'))
+    expect(next.sessionData.s4.messages.map((message) => message.id)).toEqual(['s4-m1'])
+  })
+})
+
+describe('run_complete frames', () => {
+  it('leaves the store alone: the row status is the run state', () => {
+    // The frame says a run ended, and the session_status frame beside it is
+    // what the list shows. Nothing reads a second copy of that state, so the
+    // reducer has nothing to do.
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const done = reduceFrame(start, frame('run_complete', { type: 'complete', payload: { session_id: 's1', message_id: 'm1' } }, 4, 's1'))
+    expect(done).toBe(start)
+  })
+})
+
+describe('isUnreadRow', () => {
+  it('answers what isUnread answers, without looking the row up again', () => {
+    const start = reduceBootstrap(createAppStore(memoryStorage()).get(), bootstrap)
+    const state = reduceFrame(
+      start,
+      frame('session', { type: 'updated', payload: { id: 's2', title: 'Tests', message_count: 3, updated_at: 40 } }, 9),
+    )
+    for (const row of state.sessions) {
+      expect(isUnreadRow(state, row), row.id).toBe(isUnread(state, row.id))
+    }
+    const moved = state.sessions.find((row) => row.id === 's2')
+    expect(moved).toBeDefined()
+    expect(isUnreadRow(state, moved!)).toBe(true)
+    // The session on screen is being read, so it never carries the marker.
+    const open = state.sessions.find((row) => row.id === 's1')
+    expect(isUnreadRow({ ...state, selectedSessionId: 's1' }, open!)).toBe(false)
+  })
+})
+
 describe('AppStore.selectSession', () => {
   it('marks the row seen at its updated_at and persists it', () => {
     const storage = memoryStorage()
@@ -185,6 +319,50 @@ describe('AppStore.selectSession', () => {
     store.selectSession('s2')
     expect(isUnread(store.get(), 's2')).toBe(false)
     expect(storage.getItem('crush.seen')).toContain('"s2":40')
+  })
+})
+
+describe('AppStore.releaseSession', () => {
+  function withMessages(store: ReturnType<typeof createAppStore>, sessionID: string) {
+    store.applyFrame(
+      frame('session_snapshot', {
+        session_id: sessionID,
+        messages: [{ id: `${sessionID}-m1`, role: 'user', session_id: sessionID, parts: [], created_at: 1, updated_at: 1 }],
+        has_more: false,
+        files: [],
+        busy: false,
+        queued: [],
+      }, 2, sessionID),
+    )
+  }
+
+  it('drops what the tab loaded for a session it stopped following', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    withMessages(store, 's2')
+    expect(store.get().sessionData.s2).toBeDefined()
+    store.releaseSession('s2')
+    expect(store.get().sessionData.s2).toBeUndefined()
+    // The row stays: the session still exists, the tab just holds no page of
+    // its history any more.
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1', 's2'])
+  })
+
+  it('never releases the session on screen', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.selectSession('s2')
+    withMessages(store, 's2')
+    store.releaseSession('s2')
+    expect(store.get().sessionData.s2?.messages).toHaveLength(1)
+  })
+
+  it('keeps the state object when there is nothing to release', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    const before = store.get()
+    store.releaseSession('s2')
+    expect(store.get()).toBe(before)
   })
 })
 
@@ -260,6 +438,9 @@ describe('unread persistence', () => {
     const storage = memoryStorage()
     const store = createAppStore(storage)
     store.applyBootstrap(bootstrap)
+    store.applyFrame(
+      frame('session_snapshot', { session_id: 's1', messages: [], has_more: false, files: [], busy: false, queued: [] }, 1, 's1'),
+    )
     const afterBootstrap = storage.getItem('crush.seen')
     store.applyFrame(
       frame('message', { type: 'created', payload: { id: 'm1', role: 'user', session_id: 's1', parts: [], created_at: 1, updated_at: 1 } }, 2, 's1'),
@@ -372,7 +553,6 @@ describe('a snapshot that beats the session created frame', () => {
     expect(next.sessions[0].title).toBe('Fresh')
     expect(next.sessions[0].status).toBe('idle')
     expect(next.sessionData.s4.messages).toHaveLength(1)
-    expect(next.sessionData.s4.busy).toBe(true)
   })
 
   it('still drops a snapshot with no session entity', () => {

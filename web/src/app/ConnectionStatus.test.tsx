@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ConnectionState } from '../api/stream'
 import { createAppStore } from '../store/app'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from './storage'
 import ConnectionStatus from './ConnectionStatus'
 
 function storeWith(connection: ConnectionState) {

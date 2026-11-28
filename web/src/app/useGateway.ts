@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ApiClient, stripTokenFromUrl } from '../api/http'
 import { StreamClient } from '../api/stream'
-import { bootstrapSchema } from '../api/wire'
 import { createAppStore, wantedSubscriptions } from '../store/app'
 import type { AppState, AppStore } from '../store/app'
 import type { Store } from '../store/store'
@@ -11,20 +10,10 @@ import { safeStorage } from './storage'
 
 export type BootState = 'authenticating' | 'ready' | 'unauthorized' | 'unreachable'
 
-// GatewayClient is the part of ApiClient the tab needs before anything is
-// rendered. It is what a test substitutes, so the hook never reaches the
-// network on its own. The response body of get is unused — the call exists to
-// prove the gateway answers.
-export interface GatewayClient {
-  readonly authenticated: boolean
-  authenticate(token: string): Promise<void>
-  get(path: string): Promise<unknown>
-  wsProtocols(): string[]
-  clearToken(): void
-}
-
 export interface GatewayOptions {
-  client?: GatewayClient
+  // client is the tab's gateway client. A test passes one whose fetch is a
+  // stub, so the hook never reaches the network on its own.
+  client?: ApiClient
   hash?: string
   stripHash?: () => void
   createSocket?: (url: string, protocols: string[]) => WebSocket
@@ -46,7 +35,7 @@ export interface Gateway {
 // store, so the shell renders before any session is selected.
 export function useGateway(options: GatewayOptions = {}): Gateway {
   const client = useMemo(
-    () => (options.client as ApiClient | undefined) ?? new ApiClient({ storage: safeStorage('session') }),
+    () => options.client ?? new ApiClient({ storage: safeStorage('session') }),
     [options.client],
   )
   const store = useMemo(() => createAppStore(options.storage ?? safeStorage('local')), [options.storage])
@@ -105,7 +94,7 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
       url: () => `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/stream`,
       protocols: () => client.wsProtocols(),
       handlers: {
-        onBootstrap: (payload) => store.applyBootstrap(bootstrapSchema.parse(payload)),
+        onBootstrap: (payload) => store.applyBootstrap(payload),
         onFrame: (frame) => store.applyFrame(frame),
         onState: (next) => {
           store.setConnection(next)
@@ -176,6 +165,7 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
     const subscribed = new Set<string>()
     const reconcile = () => {
       const wanted = wantedSubscriptions(store.get())
+      const dropped: string[] = []
       // Unsubscribe first: the gateway caps subscriptions per connection, so
       // a new one is refused while the session it replaces still holds a
       // slot. Dropping what is no longer wanted makes room for what is.
@@ -183,6 +173,7 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
         if (!wanted.includes(sessionID)) {
           subscribed.delete(sessionID)
           stream.unsubscribe(sessionID)
+          dropped.push(sessionID)
         }
       }
       for (const sessionID of wanted) {
@@ -190,6 +181,12 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
           subscribed.add(sessionID)
           stream.subscribe(sessionID)
         }
+      }
+      // The data goes after the loop: releasing it notifies the store, and
+      // that runs this reconcile again. Doing it outside the diff keeps the
+      // second pass from walking a set the first one is still changing.
+      for (const sessionID of dropped) {
+        store.releaseSession(sessionID)
       }
     }
     reconcile()

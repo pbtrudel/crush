@@ -6,7 +6,9 @@ import type { ApiClient } from '../api/http'
 import { HttpError } from '../api/http'
 import { bootstrapSchema, type SessionRow as SessionRowData } from '../api/wire'
 import { createAppStore, type AppState } from '../store/app'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
+import AppFrame from '../layout/AppFrame'
+import { setMediaQueryMatches } from '../test/mediaQueries'
 import SidebarContainer from './SidebarContainer'
 
 function row(overrides: Partial<SessionRowData> = {}): SessionRowData {
@@ -217,6 +219,27 @@ describe('SidebarContainer', () => {
     } finally {
       restore()
     }
+  })
+
+  it('closes the narrow drawer it was picked in and focuses the conversation', async () => {
+    const user = userEvent.setup()
+    setMediaQueryMatches('(max-width: 767px)', true)
+    const store = createAppStore(memoryStorage())
+    store.set({ sessions: [row(), row({ id: 's2', title: 'Second session' })], selectedSessionId: 's1' })
+    const client = { send: vi.fn() } as unknown as ApiClient
+    const { container } = render(
+      <AppFrame sidebar={<SidebarContainer client={client} store={store} />}>
+        <p>conversation</p>
+      </AppFrame>,
+    )
+    const frame = container.querySelector('[data-testid="app-frame"]')
+    await user.click(screen.getByRole('button', { name: 'Open sidebar' }))
+    expect(frame?.getAttribute('data-drawer')).toBe('true')
+
+    await user.click(screen.getByText('Second session'))
+    expect(store.get().selectedSessionId).toBe('s2')
+    expect(frame?.getAttribute('data-drawer')).toBe('false')
+    expect(document.activeElement).toBe(screen.getByRole('main'))
   })
 
   it('renames a session through the gateway', async () => {

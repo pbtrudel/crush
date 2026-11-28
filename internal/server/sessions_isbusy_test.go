@@ -342,3 +342,4 @@ func TestSessionGetIncludesAttachedClients(t *testing.T) {
 func (*stubCoordinator) ListSettledMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
+func (*stubCoordinator) SettleSession(context.Context, string) error { return nil }

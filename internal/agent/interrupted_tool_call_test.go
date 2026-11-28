@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/crush/internal/config"
@@ -456,4 +459,344 @@ func TestListSettledMessages_ConcurrentReadersSettleOnce(t *testing.T) {
 		results += len(m.ToolResults())
 	}
 	require.Equal(t, 1, results, "the orphan must be settled exactly once")
+}
+
+// TestSettleSession_RepairsAnIdleTranscript pins what paging a session needs:
+// the web gateway reads pages of the store, so the settle has to happen
+// before the page is read, not on the way through it.
+func TestSettleSession_RepairsAnIdleTranscript(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, assistant := killedTurn(t, env, true)
+	c := settlingCoordinator(env)
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	var results []message.ToolResult
+	for _, m := range stored {
+		results = append(results, m.ToolResults()...)
+	}
+	require.Len(t, results, 1, "an idle session is settled before it is paged")
+	require.Equal(t, interruptedToolCallResult, results[0].Content)
+	require.True(t, results[0].IsError)
+
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	require.True(t, reloaded.ToolCalls()[0].Finished)
+}
+
+// A live run's unanswered call is not an orphan, so settling leaves it and
+// the pager's page shows it exactly as stored.
+func TestSettleSession_LeavesABusySessionAlone(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, assistant := killedTurn(t, env, true)
+	c := settlingCoordinator(env)
+	c.mainAgent.(*sessionAgent).activeRequests.Set(sess.ID, &activeCancel{cancel: func() {}})
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	for _, m := range stored {
+		require.Empty(t, m.ToolResults(), "a busy session is paged without a repair")
+	}
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	require.False(t, reloaded.IsFinished(), "a live run's turn is not finished by settling")
+}
+
+// A call that already has its result must not gain a second one: only the
+// rows settling needs are read, and the results are read with them.
+func TestSettleSession_DoesNotAnswerAnAnsweredCall(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, _ := env.sessions.Create(ctx, "answered")
+	_, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_a", Name: "bash", Input: "{}", Finished: true},
+			message.ToolCall{ID: "call_b", Name: "view", Input: "{}", Finished: true},
+		},
+	})
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.Tool,
+		Parts: []message.ContentPart{message.ToolResult{ToolCallID: "call_a", Name: "bash", Content: "done"}},
+	})
+	require.NoError(t, err)
+
+	c := settlingCoordinator(env)
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	var results []message.ToolResult
+	for _, m := range stored {
+		results = append(results, m.ToolResults()...)
+	}
+	require.Len(t, results, 2, "each call ends with exactly one result")
+	byCall := map[string]string{}
+	for _, tr := range results {
+		byCall[tr.ToolCallID] = tr.Content
+	}
+	require.Equal(t, "done", byCall["call_a"], "the stored result is left alone")
+	require.Equal(t, interruptedToolCallResult, byCall["call_b"])
+}
+
+// countingMessages counts the settle reads, so a test can pin that a healthy
+// session never loads its tool rows.
+type countingMessages struct {
+	message.Service
+	toolReads int
+	toolRows  int
+}
+
+func (c *countingMessages) ListToolMessagesFrom(ctx context.Context, sessionID string, from int64) ([]message.Message, error) {
+	c.toolReads++
+	rows, err := c.Service.ListToolMessagesFrom(ctx, sessionID, from)
+	c.toolRows += len(rows)
+	return rows, err
+}
+
+// flakyCreateMessages fails the first tool-result write, the way a store can
+// fail part way through a repair.
+type flakyCreateMessages struct {
+	message.Service
+	failed bool
+}
+
+func (f *flakyCreateMessages) Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+	if params.Role == message.Tool && !f.failed {
+		f.failed = true
+		return message.Message{}, errors.New("store is busy")
+	}
+	return f.Service.Create(ctx, sessionID, params)
+}
+
+// settlingCoordinatorOver builds a coordinator over another message service,
+// so a test can count or fail the settle's writes.
+func settlingCoordinatorOver(env fakeEnv, messages message.Service) *coordinator {
+	main := NewSessionAgent(SessionAgentOptions{Models: noModels, Sessions: env.sessions, Messages: messages})
+	return &coordinator{mainAgent: main, agents: map[string]SessionAgent{config.AgentCoder: main}, messages: messages}
+}
+
+// TestSettleSession_ReadsNoToolRowsForAHealthySession pins the cost of a page
+// read: a session with nothing unfinished never loads its tool rows, which
+// are the bulk of a long transcript.
+func TestSettleSession_ReadsNoToolRowsForAHealthySession(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, err := env.sessions.Create(ctx, "healthy")
+	require.NoError(t, err)
+	assistant, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_ok", Name: "bash", Input: "{}", Finished: true},
+			message.Finish{Reason: message.FinishReasonEndTurn, Time: 1000},
+		},
+	})
+	require.NoError(t, err)
+	// Update is what sets finished_at, so this turn is done.
+	require.NoError(t, env.messages.Update(ctx, assistant))
+	for range 50 {
+		_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+			Role:  message.Tool,
+			Parts: []message.ContentPart{message.ToolResult{ToolCallID: "call_ok", Name: "bash", Content: "ok"}},
+		})
+		require.NoError(t, err)
+	}
+
+	// A turn whose only call the provider ran itself is unfinished too, but
+	// it can never need a result, so settling it must still read no tool row.
+	providerOnly, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_provider", Name: "web_search", ProviderExecuted: true, Finished: true},
+		},
+	})
+	require.NoError(t, err)
+
+	counting := &countingMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, counting)
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+	require.Zero(t, counting.toolReads, "a healthy session must read no tool rows")
+	require.Zero(t, counting.toolRows)
+
+	reloaded, err := env.messages.Get(ctx, providerOnly.ID)
+	require.NoError(t, err)
+	require.True(t, reloaded.IsFinished(), "a provider-only turn is finished without a tool lookup")
+}
+
+// TestSettleSession_RetriesARepairThatStoppedHalfway pins that a repair which
+// failed on its result write is picked up by the next read instead of leaving
+// the call open forever.
+func TestSettleSession_RetriesARepairThatStoppedHalfway(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, assistant := killedTurn(t, env, true)
+	flaky := &flakyCreateMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, flaky)
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	for _, m := range stored {
+		require.Empty(t, m.ToolResults(), "the first pass wrote no result")
+	}
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	require.False(t, reloaded.IsFinished(), "a repair that stopped halfway leaves the turn open")
+
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+	stored, err = env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	var results []message.ToolResult
+	for _, m := range stored {
+		results = append(results, m.ToolResults()...)
+	}
+	require.Len(t, results, 1, "the next read settles the call")
+	require.Equal(t, interruptedToolCallResult, results[0].Content)
+}
+
+// resultsIn counts the tool results stored for one call.
+func resultsIn(t *testing.T, messages message.Service, sessionID, callID string) int {
+	t.Helper()
+	stored, err := messages.List(t.Context(), sessionID)
+	require.NoError(t, err)
+	var n int
+	for _, m := range stored {
+		for _, tr := range m.ToolResults() {
+			if tr.ToolCallID == callID {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// stalledSettleMessages widens the window the settle lock has to close: every
+// pass pauses inside its first read, so overlapping callers would all see the
+// same open call if they were not serialised.
+type stalledSettleMessages struct {
+	message.Service
+}
+
+func (s *stalledSettleMessages) ListUnfinishedAssistants(ctx context.Context, sessionID string) ([]message.Message, error) {
+	time.Sleep(5 * time.Millisecond)
+	return s.Service.ListUnfinishedAssistants(ctx, sessionID)
+}
+
+// TestSettleSession_ConcurrentSettlesWriteOneResult pins the one lock both
+// settle paths share. A tab that pages through the coordinator and a tab that
+// pages before the agent exists reach the settle through different callers, so
+// without a common lock both would write a result for the same call.
+func TestSettleSession_ConcurrentSettlesWriteOneResult(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, _ := killedTurn(t, env, true)
+	messages := &stalledSettleMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, messages)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			require.NoError(t, c.SettleSession(ctx, sess.ID))
+		})
+		wg.Go(func() {
+			require.NoError(t, SettleSession(ctx, messages, func(string) bool { return false }, sess.ID))
+		})
+	}
+	wg.Wait()
+
+	require.Equal(t, 1, resultsIn(t, env.messages, sess.ID, "call_killed"),
+		"the orphan is settled exactly once")
+}
+
+// TestSettleSession_FinishesATurnItsResultsAlreadyAnswer pins the turn a
+// process killed between its last result and the end of the step: its calls
+// are answered, so nothing is written, but the turn needs its finish part or
+// every page read keeps selecting it and reading its tool rows.
+func TestSettleSession_FinishesATurnItsResultsAlreadyAnswer(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, err := env.sessions.Create(ctx, "stalled")
+	require.NoError(t, err)
+	assistant, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_a", Name: "bash", Input: "{}", Finished: true},
+		},
+	})
+	require.NoError(t, err)
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.Tool,
+		Parts: []message.ContentPart{message.ToolResult{ToolCallID: "call_a", Name: "bash", Content: "ok"}},
+	})
+	require.NoError(t, err)
+
+	before, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+
+	counting := &countingMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, counting)
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	reloaded, err := env.messages.Get(ctx, assistant.ID)
+	require.NoError(t, err)
+	finish := reloaded.FinishPart()
+	require.NotNil(t, finish, "the stalled turn is finished")
+	require.Equal(t, message.FinishReasonError, finish.Reason)
+	require.Equal(t, interruptedTurnMessage, finish.Message)
+	require.Equal(t, before.UpdatedAt, finish.Time, "the finish is backdated to when the turn stopped")
+	require.Equal(t, 1, resultsIn(t, env.messages, sess.ID, "call_a"), "no new result is written")
+
+	// The next pass has nothing unfinished, so it reads no tool row at all.
+	reads := counting.toolReads
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+	require.Equal(t, reads, counting.toolReads)
+}
+
+// TestSettleSession_IgnoresToolRowsOlderThanTheTurn pins the bound on the
+// tool read: a result created before the oldest unfinished turn cannot answer
+// its calls, so it is neither read nor taken as an answer.
+func TestSettleSession_IgnoresToolRowsOlderThanTheTurn(t *testing.T) {
+	env := testEnv(t)
+	ctx := t.Context()
+
+	sess, err := env.sessions.Create(ctx, "backdated")
+	require.NoError(t, err)
+	old, err := env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role:  message.Tool,
+		Parts: []message.ContentPart{message.ToolResult{ToolCallID: "call_open", Name: "bash", Content: "stale"}},
+	})
+	require.NoError(t, err)
+	_, err = env.conn.ExecContext(ctx,
+		`UPDATE messages SET created_at = created_at - 3600 WHERE id = ?`, old.ID)
+	require.NoError(t, err)
+
+	_, err = env.messages.Create(ctx, sess.ID, message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{ID: "call_open", Name: "bash", Input: "{}", Finished: true},
+		},
+	})
+	require.NoError(t, err)
+
+	counting := &countingMessages{Service: env.messages}
+	c := settlingCoordinatorOver(env, counting)
+	require.NoError(t, c.SettleSession(ctx, sess.ID))
+
+	require.Zero(t, counting.toolRows, "a row older than the turn is not read")
+	require.Equal(t, 2, resultsIn(t, env.messages, sess.ID, "call_open"),
+		"the stale result did not answer the call, so it is settled anew")
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"cmp"
 	"context"
+	"database/sql"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,6 +42,9 @@ type fakeEnv struct {
 	// titles is shared by every agent this env builds, so the cleanup
 	// below can drain title generation before the database closes.
 	titles *titleTracker
+	// conn is the store behind the services, for the few tests that have
+	// to write what the services keep to themselves, such as created_at.
+	conn *sql.DB
 }
 
 type builderFunc func(t *testing.T, r *vcr.Recorder) (fantasy.LanguageModel, error)
@@ -132,6 +136,7 @@ func testEnvAt(t *testing.T, workingDir string) fakeEnv {
 		&filetrackerService,
 		lspClients,
 		titles,
+		conn,
 	}
 }
 

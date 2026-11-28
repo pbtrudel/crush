@@ -1,5 +1,8 @@
 import { clsx } from 'clsx'
 import {
+  createContext,
+  useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -28,6 +31,19 @@ export interface AppFrameProps {
   // storage carries the theme preference; a test injects an in-memory one and
   // the browser falls back to localStorage.
   storage?: Storage
+}
+
+// SessionChoiceContext carries the callback a sidebar calls when the person
+// picks a session. The frame takes the sidebar as an element, so the callback
+// cannot arrive as a prop; outside a frame the default does nothing.
+const SessionChoiceContext = createContext<() => void>(() => undefined)
+
+// useSessionChoice is what a sidebar calls once a session is selected. In a
+// narrow window the frame closes the drawer the session was picked in and
+// moves the focus to the conversation it revealed; in a wide one it does
+// nothing.
+export function useSessionChoice(): () => void {
+  return useContext(SessionChoiceContext)
 }
 
 const narrowQuery = '(max-width: 767px)'
@@ -81,6 +97,10 @@ export default function AppFrame({ sidebar, right, status, children, storage }: 
   const frame = useRef<HTMLDivElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const opener = useRef<HTMLButtonElement>(null)
+  const main = useRef<HTMLElement>(null)
+  // focusMain records that the drawer closed because a session was picked, so
+  // the next render moves the focus into the conversation.
+  const focusMain = useRef(false)
 
   // The width rides a custom property on the frame element, so a drag updates
   // the layout without re-rendering the tree and the CSP sees no inline
@@ -167,6 +187,29 @@ export default function AppFrame({ sidebar, right, status, children, storage }: 
     opener.current?.focus()
   }
 
+  // A session picked in the drawer is behind the conversation it opens, so
+  // the drawer goes. The focus follows the pick instead of returning to the
+  // opener.
+  const chooseSession = useCallback(() => {
+    if (!narrow || !drawerOpen) {
+      return
+    }
+    focusMain.current = true
+    setDrawerOpen(false)
+  }, [drawerOpen, narrow])
+
+  const drawerModal = narrow && drawerOpen
+  // The focus move waits for the render that drops inert: a browser will not
+  // focus an inert element, and the conversation is inert while the drawer is
+  // modal.
+  useEffect(() => {
+    if (!focusMain.current || drawerModal) {
+      return
+    }
+    focusMain.current = false
+    main.current?.focus()
+  }, [drawerModal])
+
   // The drawer is modal: focus moves to its first control, Tab cycles inside
   // it, and Escape closes it and returns focus to the opener outside it.
   useEffect(() => {
@@ -178,6 +221,11 @@ export default function AppFrame({ sidebar, right, status, children, storage }: 
     const firstControl = controls()[0]
     ;(firstControl ?? element).focus()
     const onKey = (event: KeyboardEvent) => {
+      // A control inside the drawer (the rename box) can handle Escape
+      // itself; the drawer must not close under it.
+      if (event.defaultPrevented) {
+        return
+      }
       if (event.key === 'Escape') {
         closeDrawer()
         return
@@ -212,81 +260,82 @@ export default function AppFrame({ sidebar, right, status, children, storage }: 
   }, [drawerOpen, narrow])
 
   const sidebarHidden = narrow ? !drawerOpen : collapsed
-  const drawerModal = narrow && drawerOpen
   // React 18 does not know the inert attribute, so it arrives as an unknown
   // string attribute: any value other than undefined means inert.
   const inert = drawerModal ? { inert: '' } : {}
 
   return (
-    <div className={styles.app}>
-      <div className={styles.banner}>
-        {narrow ? (
-          <button
-            ref={opener}
-            type="button"
-            className={styles.opener}
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Open sidebar"
-            aria-controls={panelId}
-            aria-expanded={drawerOpen}
-          >
-            »
-          </button>
-        ) : null}
-        <p className={styles.bannerText}>Preview: the new web UI is incomplete</p>
-        <label className={styles.theme}>
-          <span>Theme</span>
-          <select className={styles.themeSelect} value={preference} onChange={choosePreference}>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-            <option value="system">System</option>
-          </select>
-        </label>
-      </div>
-      {status}
-      <div
-        ref={frame}
-        className={styles.frame}
-        data-testid="app-frame"
-        data-collapsed={collapsed ? 'true' : 'false'}
-        data-drawer={drawerOpen ? 'true' : 'false'}
-      >
-        <div
-          ref={panel}
-          id={panelId}
-          data-testid="sidebar-panel"
-          className={clsx(styles.sidebar, collapsed && !narrow && styles.rail, narrow && drawerOpen && styles.drawer)}
-          tabIndex={-1}
-          role={drawerModal ? 'dialog' : undefined}
-          aria-modal={drawerModal ? true : undefined}
-          aria-label={drawerModal ? 'Sessions' : undefined}
-        >
-          <button
-            type="button"
-            className={styles.collapse}
-            onClick={() => (narrow ? closeDrawer() : setCollapsed((value) => !value))}
-            aria-label={narrow ? 'Close sidebar' : collapsed ? 'Open sidebar' : 'Collapse sidebar'}
-            aria-expanded={narrow ? drawerOpen : !collapsed}
-            aria-controls={panelId}
-          >
-            {narrow ? '«' : collapsed ? '»' : '«'}
-          </button>
-          {sidebarHidden ? null : sidebar}
+    <SessionChoiceContext.Provider value={chooseSession}>
+      <div className={styles.app}>
+        <div className={styles.banner}>
+          {narrow ? (
+            <button
+              ref={opener}
+              type="button"
+              className={styles.opener}
+              onClick={() => setDrawerOpen(true)}
+              aria-label="Open sidebar"
+              aria-controls={panelId}
+              aria-expanded={drawerOpen}
+            >
+              »
+            </button>
+          ) : null}
+          <p className={styles.bannerText}>Preview: the new web UI is incomplete</p>
+          <label className={styles.theme}>
+            <span>Theme</span>
+            <select className={styles.themeSelect} value={preference} onChange={choosePreference}>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+              <option value="system">System</option>
+            </select>
+          </label>
         </div>
+        {status}
         <div
-          className={styles.resizer}
-          role="separator"
-          aria-label="Resize sidebar"
-          aria-orientation="vertical"
-          onPointerDown={startResize}
-        />
-        {/* tabIndex lets a dismissed alert move focus to the region it
-            left behind instead of dropping it to the body. */}
-        <main className={styles.center} tabIndex={-1} {...inert}>
-          {children}
-        </main>
-        {right ? <aside className={styles.right}>{right}</aside> : null}
+          ref={frame}
+          className={styles.frame}
+          data-testid="app-frame"
+          data-collapsed={collapsed ? 'true' : 'false'}
+          data-drawer={drawerOpen ? 'true' : 'false'}
+        >
+          <div
+            ref={panel}
+            id={panelId}
+            data-testid="sidebar-panel"
+            className={clsx(styles.sidebar, collapsed && !narrow && styles.rail, narrow && drawerOpen && styles.drawer)}
+            tabIndex={-1}
+            role={drawerModal ? 'dialog' : undefined}
+            aria-modal={drawerModal ? true : undefined}
+            aria-label={drawerModal ? 'Sessions' : undefined}
+          >
+            <button
+              type="button"
+              className={styles.collapse}
+              onClick={() => (narrow ? closeDrawer() : setCollapsed((value) => !value))}
+              aria-label={narrow ? 'Close sidebar' : collapsed ? 'Open sidebar' : 'Collapse sidebar'}
+              aria-expanded={narrow ? drawerOpen : !collapsed}
+              aria-controls={panelId}
+            >
+              {narrow ? '«' : collapsed ? '»' : '«'}
+            </button>
+            {sidebarHidden ? null : sidebar}
+          </div>
+          <div
+            className={styles.resizer}
+            role="separator"
+            aria-label="Resize sidebar"
+            aria-orientation="vertical"
+            onPointerDown={startResize}
+          />
+          {/* tabIndex lets a dismissed alert move focus to the region it
+              left behind instead of dropping it to the body. */}
+          <main ref={main} className={styles.center} tabIndex={-1} {...inert}>
+            {children}
+          </main>
+          {right ? <aside className={styles.right}>{right}</aside> : null}
+        </div>
       </div>
-    </div>
+    </SessionChoiceContext.Provider>
   )
 }

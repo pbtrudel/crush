@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from 'react'
 
 import type { ApiClient } from '../api/http'
-import { isUnread, type AppState, type AppStore } from '../store/app'
+import { useSessionChoice } from '../layout/AppFrame'
+import { isUnreadRow, type AppState, type AppStore } from '../store/app'
 import { useStore, type Store } from '../store/store'
 import Sidebar from './Sidebar'
 import { sessionActions } from './actions'
@@ -25,11 +26,12 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
   const actions = useMemo(() => sessionActions(client), [client])
 
   // The unread markers come from a derived string, so the list re-renders
-  // exactly when a marker changes and not on every frame. isUnread is the
-  // one place the seen comparison lives; the component only asks it.
+  // exactly when a marker changes and not on every frame. isUnreadRow is the
+  // one place the seen comparison lives, and it takes the row the filter
+  // already has: looking each id up again would walk the list once per row.
   const unreadIDs = useStore(store, (state) =>
     state.sessions
-      .filter((row) => isUnread(state, row.id))
+      .filter((row) => isUnreadRow(state, row))
       .map((row) => row.id)
       .join(','),
   )
@@ -40,13 +42,18 @@ export default function SidebarContainer({ client, store }: SidebarContainerProp
 
   const dismissError = useCallback(() => setError(null), [])
 
+  // The frame closes a narrow drawer once a session is picked and takes the
+  // focus with it; outside a frame the callback does nothing.
+  const chooseSession = useSessionChoice()
+
   const select = useCallback(
     (id: string) => {
       // Selecting only records the choice. useGateway subscribes the new
       // session and drops the old one when it is idle.
       store.selectSession(id)
+      chooseSession()
     },
-    [store],
+    [store, chooseSession],
   )
 
   const create = useCallback(() => {

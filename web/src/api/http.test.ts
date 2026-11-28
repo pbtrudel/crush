@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
 import { ApiClient, HttpError, readTokenFromHash, stripTokenFromUrl } from './http'
 
 describe('readTokenFromHash', () => {

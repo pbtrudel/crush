@@ -1,13 +1,14 @@
 # Web mode
 
-> **Note:** The web UI is being rebuilt. Web mode currently serves a
-> placeholder page: `crush --web`, `/web`, the `WEB` badge and the gateway
-> all still work, but the tab only shows a "being rebuilt" notice until the
-> new UI lands. Everything the rest of this document says about the tab is
-> history: the holodeck stage, the chronoline, the file drawer, the display
-> settings and the pin/browse toggle were removed with the old UI. Display
-> settings are gone for good, so `options.web_display` no longer exists and
-> a config that still sets it is read and ignored.
+> **Note:** The web UI is being rebuilt. The M1 shell has landed: `crush
+> --web`, `/web`, the `WEB` badge and the gateway all work, and the tab now
+> serves the rebuilt shell (the sessions sidebar, the conversation and the
+> connection status) instead of a placeholder notice.
+> Everything the rest of this document says about the old tab is history: the
+> holodeck stage, the chronoline, the file drawer, the display settings and
+> the pin/browse toggle were removed with the old UI. Display settings are
+> gone for good, so `options.web_display` no longer exists and a config that
+> still sets it is read and ignored.
 
 Web mode serves a running Crush session to a browser tab. The terminal stays
 open next to the tab, and either side can drive the session: prompts,
@@ -363,7 +364,7 @@ same dialog, and the same session the terminal is showing.
 - Every `/api` request except `POST /api/auth` carries
   `Authorization: Bearer <token>`. A WebSocket upgrade cannot set that header,
   so the stream sends the token in the `crush.auth.<token>` subprotocol and
-  the gateway selects `crush.v1`. Crush sets no cookie.
+  the gateway selects `crush.v2`. Crush sets no cookie.
 - The token travels in the URL fragment, which the browser never sends to the
   server, and lives in the tab's `sessionStorage`, which is isolated per
   origin including the port. Crush does not log it, and a secret-bearing

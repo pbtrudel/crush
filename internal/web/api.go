@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/question"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/workspace"
 )
 
 const (
@@ -205,9 +206,38 @@ func pageMessages(msgs []message.Message, before string, limit int) ([]message.M
 	return msgs[start:end], start > 0, nil
 }
 
-// clampMessageLimit keeps a request inside the page window.
-func clampMessageLimit(limit int) int {
-	return min(limit, maxMessagePageSize)
+// messagePager is the optional workspace capability the paging paths use: one
+// page of a session's transcript, read straight from the store so a long
+// session is never loaded whole, and settled first so a call a dead process
+// left open is never paged back as still running. The in-process workspace
+// implements it; a client/server workspace does not, and the gateway reads the
+// whole session there as it always has.
+type messagePager interface {
+	ListMessagesPage(ctx context.Context, sessionID, before string, limit int) ([]message.Message, bool, error)
+}
+
+// The in-process workspace is the one the paging routes page with: web mode
+// serves the session the terminal already owns.
+var _ messagePager = (*workspace.AppWorkspace)(nil)
+
+// messagePage reads one page of a session's messages. The paging workspace
+// settles and pages in one call, so the gateway has no busy branch of its own:
+// settling leaves a live run's calls alone, and paging one is exactly what a
+// busy session should get.
+func (g *Gateway) messagePage(ctx context.Context, sessionID, before string, limit int) ([]message.Message, bool, error) {
+	if pager, ok := g.ws.(messagePager); ok {
+		page, hasMore, err := pager.ListMessagesPage(ctx, sessionID, before, limit)
+		if errors.Is(err, message.ErrUnknownMessage) {
+			// The handler answers the same unknown_message it always has.
+			return nil, false, errUnknownMessage
+		}
+		return page, hasMore, err
+	}
+	msgs, err := g.ws.ListMessages(ctx, sessionID)
+	if err != nil {
+		return nil, false, err
+	}
+	return pageMessages(msgs, before, limit)
 }
 
 // messageLimit reads the limit query parameter: absent means the default
@@ -222,7 +252,7 @@ func messageLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 		writeError(w, http.StatusBadRequest, "bad_limit", "limit must be a positive integer")
 		return 0, false
 	}
-	return clampMessageLimit(n), true
+	return min(n, maxMessagePageSize), true
 }
 
 // messagesResponse is one page of a session's messages.
@@ -245,14 +275,13 @@ func (g *Gateway) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	msgs, err := g.ws.ListMessages(r.Context(), sid)
-	if err != nil {
-		writeInternal(w, "list_messages", err)
-		return
-	}
-	page, hasMore, err := pageMessages(msgs, r.URL.Query().Get("before"), limit)
+	page, hasMore, err := g.messagePage(r.Context(), sid, r.URL.Query().Get("before"), limit)
 	if errors.Is(err, errUnknownMessage) {
 		writeError(w, http.StatusNotFound, "unknown_message", "no message with that id in this session")
+		return
+	}
+	if err != nil {
+		writeInternal(w, "list_messages", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, messagesResponse{Messages: entities(page), HasMore: hasMore})

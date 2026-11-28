@@ -123,15 +123,19 @@ func (h *hub) appendLocked(f frame) {
 	h.start = (h.start + 1) % ringSize
 }
 
-// publishSession tags a frame with its session, records it in the ring and
-// delivers it to every connection that tracks the session, which includes one
-// whose snapshot is still being built.
+// publishSession tags a frame with its session, records its stub in the ring
+// and delivers the full frame to every connection that tracks the session,
+// which includes one whose snapshot is still being built.
 func (h *hub) publishSession(sessionID, typ string, raw json.RawMessage) frame {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.seq++
 	f := frame{Seq: h.seq, Type: typ, Session: sessionID, Payload: raw}
-	h.appendLocked(f)
+	// The ring keeps a stub, not the frame: a per-session frame is never
+	// replayed, so its payload would only cost memory for as long as it
+	// sits in the ring. The sequence still has to advance, because attach
+	// computes its replay offset from the seqs the ring holds.
+	h.appendLocked(frame{Seq: f.Seq, Type: f.Type, Session: f.Session})
 	for c := range h.subs {
 		if !c.tracks(sessionID) {
 			continue
@@ -251,13 +255,6 @@ func (h *hub) unsubscribe(c *conn, sessionID string) {
 	delete(c.pending, sessionID)
 }
 
-// frames returns the ring oldest first. The caller holds no lock.
-func (h *hub) frames() []frame {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.orderedLocked()
-}
-
 func (h *hub) orderedLocked() []frame {
 	out := make([]frame, 0, len(h.ring))
 	out = append(out, h.ring[h.start:]...)
@@ -359,6 +356,7 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 	defer g.hub.detach(c)
 
 	go g.readLoop(ctx, cancel, c, ws)
+	go g.keepAlive(ctx, ws)
 
 	if needBootstrap {
 		raw, err := json.Marshal(g.buildBootstrap(ctx))
@@ -399,16 +397,47 @@ func (g *Gateway) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// readLoop reads the client's messages and cancels the connection when it
-// goes quiet for the idle timeout. A subscribe or unsubscribe is handled
-// here; its reply travels the connection's queue, so the single writer loop
-// stays the only thing writing to the socket.
+// keepAlive pings the client on an interval well inside the idle limit and
+// ends the connection when a pong does not come back. A browser answers a
+// WebSocket protocol ping natively, with no JavaScript, so this is what keeps
+// a hidden tab alive: Chrome throttles a tab's timers to about once a minute
+// after five hidden minutes, which is longer than the idle limit, so the
+// tab's own interval ping cannot arrive in time.
+func (g *Gateway) keepAlive(ctx context.Context, ws *websocket.Conn) {
+	every := g.idle / 3
+	if every <= 0 {
+		every = g.idle
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pctx, cancel := context.WithTimeout(ctx, g.idle)
+			err := ws.Ping(pctx)
+			cancel()
+			if err != nil {
+				// No pong: the tab is gone or cannot answer, so close the
+				// socket and let the read loop end with it.
+				_ = ws.CloseNow()
+				return
+			}
+		}
+	}
+}
+
+// readLoop reads the client's messages. A subscribe or unsubscribe is handled
+// here; its reply travels the connection's queue, so the writer loop stays the
+// only goroutine writing frames to the socket. keepAlive writes protocol pings
+// on the same socket, which the library serialises against the writer's
+// frames. Liveness is keepAlive's job: a read that never answers a ping ends
+// there, so the read itself has no deadline of its own.
 func (g *Gateway) readLoop(ctx context.Context, cancel context.CancelFunc, c *conn, ws *websocket.Conn) {
 	defer cancel()
 	for {
-		rctx, rcancel := context.WithTimeout(ctx, g.idle)
-		typ, data, err := ws.Read(rctx)
-		rcancel()
+		typ, data, err := ws.Read(ctx)
 		if err != nil {
 			return
 		}
@@ -429,18 +458,33 @@ func (g *Gateway) readLoop(ctx context.Context, cancel context.CancelFunc, c *co
 }
 
 // handleSubscribe answers a subscribe message with the session's snapshot.
-// The session is reserved on the connection before the snapshot is read, so
-// every frame published while the read runs is buffered for it; the snapshot
-// and the buffer are then flushed together, snapshot first. Without the
-// reservation a frame could arrive before the snapshot that should have
-// carried it.
+// The session is read once and passed to the snapshot builder, so a session
+// the store no longer has answers unknown_session and any other read failure
+// answers snapshot_failed. The session is then reserved on the connection
+// before the rest of the snapshot is read, so every frame published while the
+// read runs is buffered for it; the snapshot and the buffer are then flushed
+// together, snapshot first. Without the reservation a frame could arrive
+// before the snapshot that should have carried it.
+//
+// This runs on the read goroutine, so it also blocks the client's messages
+// while the snapshot is built, and a pong that arrives then is not read until
+// the handler returns: a snapshot slower than the keep-alive's ping wait gets
+// no answer and the tab is dropped. That is why the snapshot stays small, one
+// page of messages from the pager instead of the whole transcript, plus the
+// edited files and the queued prompts.
 func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string) {
 	if sessionID == "" {
 		g.enqueueError(c, "", "missing_session", "subscribe needs a session_id")
 		return
 	}
-	if !g.sessionExistsQuiet(ctx, sessionID) {
-		g.enqueueError(c, sessionID, "unknown_session", "no such session")
+	sess, err := g.ws.GetSession(ctx, sessionID)
+	if err != nil {
+		if isSessionNotFound(err) {
+			g.enqueueError(c, sessionID, "unknown_session", "no such session")
+			return
+		}
+		slog.Debug("Web subscribe could not read the session", "session_id", sessionID, "error", err)
+		g.enqueueError(c, sessionID, "snapshot_failed", "the session could not be read")
 		return
 	}
 	if !g.hub.beginSubscription(c, sessionID) {
@@ -448,7 +492,7 @@ func (g *Gateway) handleSubscribe(ctx context.Context, c *conn, sessionID string
 			"this connection holds the maximum number of session subscriptions")
 		return
 	}
-	snap := g.buildSessionSnapshot(ctx, sessionID, "", messagePageSize)
+	snap := g.buildSessionSnapshot(ctx, sess, "", messagePageSize)
 	raw, err := json.Marshal(snap)
 	if err != nil {
 		g.hub.abortSubscription(c, sessionID)
@@ -464,21 +508,6 @@ func (g *Gateway) enqueueError(c *conn, sessionID, code, message string) {
 		return
 	}
 	g.hub.enqueue(c, frame{Seq: g.hub.head(), Type: frameError, Payload: raw})
-}
-
-// sessionExistsQuiet reports whether the workspace still has the session,
-// logging a failure instead of answering an HTTP caller.
-func (g *Gateway) sessionExistsQuiet(ctx context.Context, sessionID string) bool {
-	_, err := g.ws.GetSession(ctx, sessionID)
-	switch {
-	case err == nil:
-		return true
-	case isSessionNotFound(err):
-		return false
-	default:
-		slog.Debug("Web subscribe could not read the session", "session_id", sessionID, "error", err)
-		return false
-	}
 }
 
 func writeFrame(ctx context.Context, ws *websocket.Conn, f frame) bool {

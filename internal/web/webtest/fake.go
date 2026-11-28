@@ -177,6 +177,15 @@ type Fake struct {
 	// listMessagesGate holds one ListMessages read; set it with
 	// SetListMessagesGate.
 	listMessagesGate *agentModelGate
+	// getSessionCalls counts GetSession reads, so a test can prove a path
+	// reads the session once; sessionErr is what GetSession answers when
+	// set. Set it with SetSessionErr. listMessagesCalls and
+	// listMessagesPageCalls count the two read paths, so a test can prove a
+	// page does not read the whole transcript.
+	getSessionCalls       int
+	sessionErr            error
+	listMessagesCalls     int
+	listMessagesPageCalls int
 	// initializePrompt is what InitializePrompt answers; set it with
 	// SetInitializePrompt.
 	initializePrompt string
@@ -431,8 +440,9 @@ func (f *Fake) SetAgentModelGate(entered chan<- struct{}, release <-chan struct{
 	f.mu.Unlock()
 }
 
-// SetListMessagesGate holds the next ListMessages call until release is
-// closed, reporting on entered first. It is one-shot: later reads pass
+// SetListMessagesGate holds the next message read until release is closed,
+// reporting on entered first, whichever read path (ListMessages or
+// ListMessagesPage) the gateway takes. It is one-shot: later reads pass
 // through, so a test only gates the snapshot it means to hold.
 func (f *Fake) SetListMessagesGate(entered chan<- struct{}, release <-chan struct{}) {
 	f.mu.Lock()
@@ -1046,11 +1056,30 @@ func (f *Fake) PermissionSetMode(m permission.PermissionMode) {
 func (f *Fake) GetSession(_ context.Context, id string) (session.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getSessionCalls++
+	if f.sessionErr != nil {
+		return session.Session{}, f.sessionErr
+	}
 	s, ok := f.sessions[id]
 	if !ok {
 		return session.Session{}, ErrSessionNotFound
 	}
 	return s, nil
+}
+
+// SetSessionErr makes GetSession answer err for every id, the way a store
+// that cannot be read would. A nil err restores the normal answer.
+func (f *Fake) SetSessionErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessionErr = err
+}
+
+// GetSessionCalls reports how many GetSession calls the fake has answered.
+func (f *Fake) GetSessionCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.getSessionCalls
 }
 
 // ListSessions answers newest updated first, with the ID breaking ties,
@@ -1136,6 +1165,7 @@ func (f *Fake) SetSessionQueued(id string, prompts []string) {
 
 func (f *Fake) ListMessages(ctx context.Context, id string) ([]message.Message, error) {
 	f.mu.Lock()
+	f.listMessagesCalls++
 	gate := f.listMessagesGate
 	f.listMessagesGate = nil
 	messages := append([]message.Message(nil), f.messages[id]...)
@@ -1149,6 +1179,135 @@ func (f *Fake) ListMessages(ctx context.Context, id string) ([]message.Message, 
 		}
 	}
 	return messages, nil
+}
+
+// ListMessagesPage answers one page of a session's transcript the way the
+// real store does: the page that ends just before before, oldest first, and
+// whether older messages remain. message.ErrUnknownMessage reports a before
+// id the session does not have. Like the real workspace, it settles the
+// transcript first unless a run owns the session.
+func (f *Fake) ListMessagesPage(ctx context.Context, id, before string, limit int) ([]message.Message, bool, error) {
+	f.mu.Lock()
+	f.listMessagesPageCalls++
+	gate := f.listMessagesGate
+	f.listMessagesGate = nil
+	f.settleLocked(id)
+	messages := append([]message.Message(nil), f.messages[id]...)
+	f.mu.Unlock()
+	if gate != nil {
+		gate.entered <- struct{}{}
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+	end := len(messages)
+	if before != "" {
+		index := -1
+		for i, m := range messages {
+			if m.ID == before {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return nil, false, message.ErrUnknownMessage
+		}
+		end = index
+	}
+	start := max(0, end-limit)
+	return messages[start:end], start > 0, nil
+}
+
+// settleLocked repairs what a killed process leaves behind the way the real
+// workspace does before paging: a tool call with no result gets an
+// interrupted one and its turn is finished. A busy session is left alone,
+// because an unanswered call there belongs to a live run. The caller holds
+// f.mu.
+func (f *Fake) settleLocked(id string) {
+	if f.busy[id] {
+		return
+	}
+	msgs := f.messages[id]
+	// The first step of the real settle: the assistant rows that never
+	// finished, and only while one of them made a call the provider did not
+	// run itself. A finished turn is not a candidate, and a session with no
+	// candidate never looks at a tool row.
+	var turns []int
+	hasOwnCall := false
+	for i := range msgs {
+		m := &msgs[i]
+		if m.Role != message.Assistant || m.IsSummaryMessage || m.IsFinished() {
+			continue
+		}
+		turns = append(turns, i)
+		for _, tc := range m.ToolCalls() {
+			hasOwnCall = hasOwnCall || !tc.ProviderExecuted
+		}
+	}
+	if len(turns) == 0 {
+		return
+	}
+	// The second step reads tool rows only when a turn made a call the
+	// provider did not run itself, exactly as the real settle does: a turn
+	// with nothing to answer still needs its finish part below.
+	answered := make(map[string]bool)
+	if hasOwnCall {
+		for _, m := range msgs {
+			if m.Role != message.Tool || m.CreatedAt < msgs[turns[0]].CreatedAt {
+				continue
+			}
+			for _, tr := range m.ToolResults() {
+				answered[tr.ToolCallID] = true
+			}
+		}
+	}
+	var settled []message.Message
+	for _, i := range turns {
+		m := &msgs[i]
+		open := make([]message.ToolCall, 0, len(m.ToolCalls()))
+		for _, tc := range m.ToolCalls() {
+			if !tc.ProviderExecuted && !answered[tc.ID] {
+				open = append(open, tc)
+			}
+		}
+		// Every turn that never finished gets the finish part, whether the
+		// repair has results to write for it or its calls are all answered.
+		m.AddFinishAt(message.FinishReasonError, "Interrupted", "", m.UpdatedAt)
+		for _, tc := range open {
+			if !tc.Finished {
+				tc.Finished = true
+				m.AddToolCall(tc)
+			}
+			settled = append(settled, message.Message{
+				SessionID: id, Role: message.Tool, CreatedAt: m.CreatedAt + 1,
+				Parts: []message.ContentPart{message.ToolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+					Content:    "tool call was interrupted and did not produce a result, you may retry this call if the result is still needed",
+					IsError:    true,
+				}},
+			})
+		}
+	}
+	if len(settled) > 0 {
+		f.messages[id] = append(msgs, settled...)
+	}
+}
+
+// ListMessagesCalls reports how many full-transcript reads the gateway made.
+func (f *Fake) ListMessagesCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listMessagesCalls
+}
+
+// ListMessagesPageCalls reports how many paged reads the gateway made.
+func (f *Fake) ListMessagesPageCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listMessagesPageCalls
 }
 
 func (f *Fake) ListChildSessions(_ context.Context, parentID string) ([]session.Session, error) {

@@ -14,7 +14,7 @@ import (
 // running, one with a queued prompt, one waiting for the person and one
 // idle. Call it before the gateway starts; then call SeedM1Pending once the
 // gateway has subscribed, so the open permission reaches its pending store.
-func SeedM1(f *Fake, clock time.Time) error {
+func SeedM1(f *Fake, clock time.Time) {
 	seeded := []struct {
 		id        string
 		title     string
@@ -43,7 +43,6 @@ func SeedM1(f *Fake, clock time.Time) error {
 	}
 	f.SetSessionBusy("s-m1-run", true)
 	f.SetSessionQueued("s-m1-queue", []string{"and the golden files"})
-	return nil
 }
 
 // SeedM1Pending publishes the permission request that leaves a session

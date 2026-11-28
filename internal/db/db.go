@@ -141,6 +141,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listFilesBySessionStmt, err = db.PrepareContext(ctx, listFilesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFilesBySession: %w", err)
 	}
+	if q.listLatestMessagesPageStmt, err = db.PrepareContext(ctx, listLatestMessagesPage); err != nil {
+		return nil, fmt.Errorf("error preparing query ListLatestMessagesPage: %w", err)
+	}
 	if q.listLatestSessionFilesStmt, err = db.PrepareContext(ctx, listLatestSessionFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListLatestSessionFiles: %w", err)
 	}
@@ -159,6 +162,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listMessagesBySessionFromSummaryStmt, err = db.PrepareContext(ctx, listMessagesBySessionFromSummary); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySessionFromSummary: %w", err)
 	}
+	if q.listMessagesPageBeforeStmt, err = db.PrepareContext(ctx, listMessagesPageBefore); err != nil {
+		return nil, fmt.Errorf("error preparing query ListMessagesPageBefore: %w", err)
+	}
 	if q.listNewFilesStmt, err = db.PrepareContext(ctx, listNewFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListNewFiles: %w", err)
 	}
@@ -173,6 +179,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listSkillsEnabledStmt, err = db.PrepareContext(ctx, listSkillsEnabled); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSkillsEnabled: %w", err)
+	}
+	if q.listToolMessagesFromStmt, err = db.PrepareContext(ctx, listToolMessagesFrom); err != nil {
+		return nil, fmt.Errorf("error preparing query ListToolMessagesFrom: %w", err)
+	}
+	if q.listUnfinishedAssistantsStmt, err = db.PrepareContext(ctx, listUnfinishedAssistants); err != nil {
+		return nil, fmt.Errorf("error preparing query ListUnfinishedAssistants: %w", err)
 	}
 	if q.listUserMessagesBySessionStmt, err = db.PrepareContext(ctx, listUserMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListUserMessagesBySession: %w", err)
@@ -401,6 +413,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listFilesBySessionStmt: %w", cerr)
 		}
 	}
+	if q.listLatestMessagesPageStmt != nil {
+		if cerr := q.listLatestMessagesPageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listLatestMessagesPageStmt: %w", cerr)
+		}
+	}
 	if q.listLatestSessionFilesStmt != nil {
 		if cerr := q.listLatestSessionFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listLatestSessionFilesStmt: %w", cerr)
@@ -431,6 +448,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listMessagesBySessionFromSummaryStmt: %w", cerr)
 		}
 	}
+	if q.listMessagesPageBeforeStmt != nil {
+		if cerr := q.listMessagesPageBeforeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listMessagesPageBeforeStmt: %w", cerr)
+		}
+	}
 	if q.listNewFilesStmt != nil {
 		if cerr := q.listNewFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listNewFilesStmt: %w", cerr)
@@ -454,6 +476,16 @@ func (q *Queries) Close() error {
 	if q.listSkillsEnabledStmt != nil {
 		if cerr := q.listSkillsEnabledStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listSkillsEnabledStmt: %w", cerr)
+		}
+	}
+	if q.listToolMessagesFromStmt != nil {
+		if cerr := q.listToolMessagesFromStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listToolMessagesFromStmt: %w", cerr)
+		}
+	}
+	if q.listUnfinishedAssistantsStmt != nil {
+		if cerr := q.listUnfinishedAssistantsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listUnfinishedAssistantsStmt: %w", cerr)
 		}
 	}
 	if q.listUserMessagesBySessionStmt != nil {
@@ -579,17 +611,21 @@ type Queries struct {
 	listFileVersionsBySessionStmt        *sql.Stmt
 	listFilesByPathStmt                  *sql.Stmt
 	listFilesBySessionStmt               *sql.Stmt
+	listLatestMessagesPageStmt           *sql.Stmt
 	listLatestSessionFilesStmt           *sql.Stmt
 	listMCPDisabledServersStmt           *sql.Stmt
 	listMCPEnabledServersStmt            *sql.Stmt
 	listMessagesBySessionStmt            *sql.Stmt
 	listMessagesBySessionFromCutStmt     *sql.Stmt
 	listMessagesBySessionFromSummaryStmt *sql.Stmt
+	listMessagesPageBeforeStmt           *sql.Stmt
 	listNewFilesStmt                     *sql.Stmt
 	listSessionReadFilesStmt             *sql.Stmt
 	listSessionsStmt                     *sql.Stmt
 	listSkillsDisabledStmt               *sql.Stmt
 	listSkillsEnabledStmt                *sql.Stmt
+	listToolMessagesFromStmt             *sql.Stmt
+	listUnfinishedAssistantsStmt         *sql.Stmt
 	listUserMessagesBySessionStmt        *sql.Stmt
 	recordFileReadStmt                   *sql.Stmt
 	renameSessionStmt                    *sql.Stmt
@@ -644,17 +680,21 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listFileVersionsBySessionStmt:        q.listFileVersionsBySessionStmt,
 		listFilesByPathStmt:                  q.listFilesByPathStmt,
 		listFilesBySessionStmt:               q.listFilesBySessionStmt,
+		listLatestMessagesPageStmt:           q.listLatestMessagesPageStmt,
 		listLatestSessionFilesStmt:           q.listLatestSessionFilesStmt,
 		listMCPDisabledServersStmt:           q.listMCPDisabledServersStmt,
 		listMCPEnabledServersStmt:            q.listMCPEnabledServersStmt,
 		listMessagesBySessionStmt:            q.listMessagesBySessionStmt,
 		listMessagesBySessionFromCutStmt:     q.listMessagesBySessionFromCutStmt,
 		listMessagesBySessionFromSummaryStmt: q.listMessagesBySessionFromSummaryStmt,
+		listMessagesPageBeforeStmt:           q.listMessagesPageBeforeStmt,
 		listNewFilesStmt:                     q.listNewFilesStmt,
 		listSessionReadFilesStmt:             q.listSessionReadFilesStmt,
 		listSessionsStmt:                     q.listSessionsStmt,
 		listSkillsDisabledStmt:               q.listSkillsDisabledStmt,
 		listSkillsEnabledStmt:                q.listSkillsEnabledStmt,
+		listToolMessagesFromStmt:             q.listToolMessagesFromStmt,
+		listUnfinishedAssistantsStmt:         q.listUnfinishedAssistantsStmt,
 		listUserMessagesBySessionStmt:        q.listUserMessagesBySessionStmt,
 		recordFileReadStmt:                   q.recordFileReadStmt,
 		renameSessionStmt:                    q.renameSessionStmt,

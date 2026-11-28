@@ -81,6 +81,10 @@ export default function SessionRow({
                 commit()
               }
               if (event.key === 'Escape') {
+                // The key is spent on the draft. A drawer the row sits in
+                // listens for Escape on the window, so it has to see that
+                // this control already acted on it.
+                event.preventDefault()
                 setRenaming(false)
                 setDraft(row.title)
               }

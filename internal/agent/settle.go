@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -24,6 +25,12 @@ const (
 	interruptedToolCallResult = "tool call was interrupted and did not produce a result, you may retry this call if the result is still needed"
 	interruptedTurnMessage    = "Interrupted"
 )
+
+// settleMu serializes transcript repairs so two readers cannot both settle
+// one orphaned call. It is package-level because the settle is reached through
+// two callers: a coordinator's ListSettledMessages and SettleSession, and the
+// workspace's settle of a page read, which runs before any coordinator exists.
+var settleMu sync.Mutex
 
 // toolResultsForCalls builds the tool message that must immediately follow
 // an assistant message with tool calls. toolResultsByCall holds one result
@@ -126,10 +133,11 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 			assistant.AddToolCall(tc)
 		}
 	}
-	if err := messages.Update(ctx, *assistant); err != nil {
-		return nil, fmt.Errorf("failed to settle tool calls: %w", err)
-	}
 
+	// The results are written before the turn is marked finished: the settle
+	// queries select on an unfinished turn, so a repair that dies on its
+	// result write has to leave the turn selectable, or the call would stay
+	// open forever.
 	settled := make([]message.Message, 0, len(calls))
 	for _, tc := range calls {
 		created, err := messages.Create(ctx, assistant.SessionID, message.CreateMessageParams{
@@ -148,6 +156,9 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 		}
 		settled = append(settled, created)
 	}
+	if err := messages.Update(ctx, *assistant); err != nil {
+		return nil, fmt.Errorf("failed to settle tool calls: %w", err)
+	}
 	return settled, nil
 }
 
@@ -155,12 +166,7 @@ func settleToolCalls(ctx context.Context, messages message.Service, assistant *m
 // reply and returns msgs with the repair applied. The caller must have
 // checked that nothing is running the session.
 func repairInterruptedToolCalls(ctx context.Context, messages message.Service, msgs []message.Message) ([]message.Message, error) {
-	resolved := make(map[string]struct{})
-	for _, msg := range msgs {
-		for _, tr := range msg.ToolResults() {
-			resolved[tr.ToolCallID] = struct{}{}
-		}
-	}
+	answered := answeredCalls(msgs)
 
 	var repaired []message.Message
 	for i := range msgs {
@@ -168,15 +174,7 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 		if msg.Role != message.Assistant {
 			continue
 		}
-		var orphans []message.ToolCall
-		for _, tc := range msg.ToolCalls() {
-			if tc.ProviderExecuted {
-				continue
-			}
-			if _, ok := resolved[tc.ID]; !ok {
-				orphans = append(orphans, tc)
-			}
-		}
+		orphans := openToolCalls(msg, answered)
 		if len(orphans) == 0 {
 			continue
 		}
@@ -194,13 +192,140 @@ func repairInterruptedToolCalls(ctx context.Context, messages message.Service, m
 	return append(msgs, repaired...), nil
 }
 
+// SettleSession repairs what a dead process left behind in a session with
+// nothing running in it. It is ListSettledMessages for a reader that pages
+// the store instead of loading the whole transcript, and it reads in two
+// steps so a healthy session costs almost nothing: first the unfinished
+// assistant rows, then, only if one of them made a call the provider did not
+// run itself, the tool results created since the oldest of them. Those rows
+// go to the same repair ListSettledMessages uses. busy reports whether a run
+// owns the session, and is sampled on both sides of the read, since a run
+// that starts during it owns the calls the rows still look open on.
+//
+// Every settle takes settleMu, whichever caller it came through, so two page
+// reads cannot both answer one call.
+func SettleSession(ctx context.Context, messages message.Service, busy func(sessionID string) bool, sessionID string) error {
+	settleMu.Lock()
+	defer settleMu.Unlock()
+
+	if err := messages.FlushAll(ctx); err != nil {
+		return err
+	}
+	if busy(sessionID) {
+		return nil
+	}
+	turns, err := messages.ListUnfinishedAssistants(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(turns) == 0 || busy(sessionID) {
+		// Nothing to settle: the common case, and it reads no tool row.
+		return nil
+	}
+	// Tool rows are only worth reading when a turn made a call the provider
+	// did not run itself; a turn whose own calls all have results needs no
+	// lookup to be finished.
+	var results []message.Message
+	if hasOwnToolCall(turns) {
+		results, err = messages.ListToolMessagesFrom(ctx, sessionID, turns[0].CreatedAt)
+		if err != nil {
+			return err
+		}
+	}
+	answered := answeredCalls(results)
+	var open, stalled []message.Message
+	for _, turn := range turns {
+		if len(openToolCalls(&turn, answered)) == 0 {
+			stalled = append(stalled, turn)
+			continue
+		}
+		open = append(open, turn)
+	}
+	if len(open) > 0 {
+		if _, err := repairInterruptedToolCalls(ctx, messages, append(open, results...)); err != nil {
+			// The repair writes results before it finishes the turn, so a
+			// failure here leaves the turn open for the next reader: a
+			// result that failed to write is retried, and one that did is
+			// not written twice.
+			slog.Warn("Failed to settle interrupted tool calls",
+				"session_id", sessionID, "error", err)
+		}
+	}
+	for i := range stalled {
+		// Its calls are all answered, so nothing is written for them, but
+		// the turn never got its finish part: a process killed between the
+		// last result and the end of the step. Without one every page read
+		// would keep selecting it and reading its tool rows.
+		if err := finishStalledTurn(ctx, messages, &stalled[i]); err != nil {
+			slog.Warn("Failed to finish a settled turn",
+				"session_id", sessionID, "error", err)
+		}
+	}
+	return nil
+}
+
+// finishStalledTurn writes the finish the repair writes on a turn whose calls
+// it settled. It is backdated to when the turn stopped, since response-time
+// statistics average over it.
+func finishStalledTurn(ctx context.Context, messages message.Service, turn *message.Message) error {
+	turn.AddFinishAt(message.FinishReasonError, interruptedTurnMessage, "", turn.UpdatedAt)
+	return messages.Update(ctx, *turn)
+}
+
+// answeredCalls reports every call id a stored result answers.
+func answeredCalls(msgs []message.Message) map[string]struct{} {
+	resolved := make(map[string]struct{})
+	for _, msg := range msgs {
+		for _, tr := range msg.ToolResults() {
+			resolved[tr.ToolCallID] = struct{}{}
+		}
+	}
+	return resolved
+}
+
+// openToolCalls reports the calls of a turn that no stored result answers,
+// skipping the ones the provider ran itself.
+func openToolCalls(turn *message.Message, answered map[string]struct{}) []message.ToolCall {
+	var open []message.ToolCall
+	for _, tc := range turn.ToolCalls() {
+		if tc.ProviderExecuted {
+			continue
+		}
+		if _, ok := answered[tc.ID]; !ok {
+			open = append(open, tc)
+		}
+	}
+	return open
+}
+
+// hasOwnToolCall reports whether any of the turns made a call the provider did
+// not run itself. A provider-run call is answered in the response that made
+// it, so it never needs a settle result and is not worth reading tool rows
+// for.
+func hasOwnToolCall(turns []message.Message) bool {
+	for _, turn := range turns {
+		for _, tc := range turn.ToolCalls() {
+			if !tc.ProviderExecuted {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SettleSession repairs the session's dangling tool calls. SettleSession takes
+// the settle lock itself, so this is only the coordinator's view of it.
+func (c *coordinator) SettleSession(ctx context.Context, sessionID string) error {
+	return SettleSession(ctx, c.messages, c.IsSessionBusy, sessionID)
+}
+
 // ListSettledMessages returns a session's transcript with calls a dead
 // process left dangling already settled. Readers are serialized so two
 // cannot settle the same call twice. Busy is sampled on both sides of the
 // read, since a run that ends mid-read left a snapshot missing its results.
 func (c *coordinator) ListSettledMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	c.settleMu.Lock()
-	defer c.settleMu.Unlock()
+	settleMu.Lock()
+	defer settleMu.Unlock()
 
 	if err := c.messages.FlushAll(ctx); err != nil {
 		return nil, err

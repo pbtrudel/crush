@@ -46,7 +46,7 @@ export const bootstrapSchema = z
   .passthrough()
 export type Bootstrap = z.infer<typeof bootstrapSchema>
 
-const messageSchema = z
+export const messageSchema = z
   .object({
     id: z.string(),
     role: z.string(),
@@ -56,6 +56,7 @@ const messageSchema = z
     updated_at: z.number(),
   })
   .passthrough()
+export type WireMessage = z.infer<typeof messageSchema>
 
 export const sessionSnapshotSchema = z
   .object({
@@ -99,17 +100,33 @@ export const signInStateSchema = z
   .passthrough()
 export type SignInState = z.infer<typeof signInStateSchema>
 
+// sessionStatusPayloadSchema is the payload of a session_status frame: the
+// row's run state, which is the one place the tab reads it from.
+export const sessionStatusPayloadSchema = z
+  .object({ session_id: z.string(), status: sessionStatusSchema })
+  .passthrough()
+export type SessionStatusPayload = z.infer<typeof sessionStatusPayloadSchema>
+
 // eventEnvelope wraps the pubsub envelope every event-derived payload
 // carries. A session the workspace no longer has answers an empty entity,
 // which is why the snapshot's session field is optional.
-const eventEnvelope = (payload: ZodTypeAny) => z.object({ type: z.string(), payload }).passthrough()
+const eventEnvelope = <T extends ZodTypeAny>(payload: T) =>
+  z.object({ type: z.string(), payload }).passthrough()
+
+// The two envelopes the store reduces keep their type: a message frame and a
+// session frame are the ones whose payload a reducer reads field by field.
+export const messageEventSchema = eventEnvelope(messageSchema)
+export type MessageEvent = z.infer<typeof messageEventSchema>
+
+export const sessionEventSchema = eventEnvelope(sessionSchema)
+export type SessionEvent = z.infer<typeof sessionEventSchema>
 
 // Payload fields the golden file does not carry yet still pass: the schemas
 // pin the fields the tab reads, never the whole shape.
 export const payloadSchemas: Record<string, ZodTypeAny> = {
   bootstrap: bootstrapSchema,
   session_snapshot: sessionSnapshotSchema,
-  session_status: z.object({ session_id: z.string(), status: sessionStatusSchema }).passthrough(),
+  session_status: sessionStatusPayloadSchema,
   session_follow: z.object({ session_id: z.string() }).passthrough(),
   input_mode_changed: z.object({ mode: z.enum(['plan', 'code']) }).passthrough(),
   plan_ready: z.object({ session_id: z.string() }).passthrough(),
@@ -135,10 +152,10 @@ export const payloadSchemas: Record<string, ZodTypeAny> = {
       })
       .passthrough(),
   ]),
-  message: eventEnvelope(messageSchema),
+  message: messageEventSchema,
   file: eventEnvelope(z.object({ session_id: z.string(), path: z.string() }).passthrough()),
   run_complete: eventEnvelope(z.object({ session_id: z.string(), message_id: z.string() }).passthrough()),
-  session: eventEnvelope(sessionSchema),
+  session: sessionEventSchema,
   permission_request: eventEnvelope(z.object({ session_id: z.string() }).passthrough()),
   permission_notification: eventEnvelope(z.object({ session_id: z.string() }).passthrough()),
   permission_mode_changed: eventEnvelope(z.object({ mode: z.string() }).passthrough()),

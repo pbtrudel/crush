@@ -43,8 +43,10 @@ export default function Conversation({
   const newest = messages.length === 0 ? null : messages[messages.length - 1].id
 
   // Tool results live in their own messages, so the calls that answered are
-  // collected from the whole log.
-  const toolResults = useMemo(() => {
+  // collected from the whole log. The set is rebuilt only when an answer
+  // changes: a token in the last message makes a new array, and a new set
+  // with it would re-render every view that reads one.
+  const answeredIDs = useMemo(() => {
     const answered = new Set<string>()
     for (const entry of messages) {
       for (const part of entry.parts) {
@@ -57,8 +59,12 @@ export default function Conversation({
         }
       }
     }
-    return answered
+    return [...answered].join(',')
   }, [messages])
+  const toolResults = useMemo(
+    () => new Set(answeredIDs === '' ? [] : answeredIDs.split(',')),
+    [answeredIDs],
+  )
 
   // A session opens at its end, and a message that arrives while the log is
   // at its end is followed. An older page changes neither the session nor the

@@ -6,7 +6,7 @@ import type { ApiClient } from '../api/http'
 import { HttpError } from '../api/http'
 import { bootstrapSchema, type ParsedFrame, type SessionRow as SessionRowData } from '../api/wire'
 import { createAppStore, type AppState, type SessionData, type WireMessage } from '../store/app'
-import { memoryStorage } from '../test/memoryStorage'
+import { memoryStorage } from '../app/storage'
 import ConversationContainer from './ConversationContainer'
 
 function row(overrides: Partial<SessionRowData> = {}): SessionRowData {
@@ -33,7 +33,7 @@ function message(id: string, value: string, role = 'assistant', sessionID = 's1'
 }
 
 function data(messages: WireMessage[], hasMore = false, snapshotSeq = 0): SessionData {
-  return { messages, hasMore, busy: false, queued: [], files: [], snapshotSeq }
+  return { messages, hasMore, queued: [], files: [], snapshotSeq }
 }
 
 const bootstrap = bootstrapSchema.parse({

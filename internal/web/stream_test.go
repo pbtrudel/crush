@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -164,6 +165,48 @@ func TestEncodeStripsAttachmentData(t *testing.T) {
 	require.Contains(t, string(p.Payload), `"Data"`)
 }
 
+// frames returns the ring oldest first. Only tests read it; the stream never
+// replays from the ring as a whole, it computes one offset from attach.
+func (h *hub) frames() []frame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.orderedLocked()
+}
+
+// TestRingKeepsAStubForSessionFrames pins what the replay ring holds for a
+// per-session frame: its sequence, type and session, never its payload. A
+// per-session frame is never replayed, so keeping the payload would only cost
+// memory for the life of the ring, while a live subscriber still needs all of
+// it.
+func TestRingKeepsAStubForSessionFrames(t *testing.T) {
+	t.Parallel()
+	h := newHub()
+	c, _, _, _ := h.attach(-1)
+	require.True(t, h.beginSubscription(c, "s1"))
+	h.flushSubscription(c, "s1", frame{Type: frameSessionSnapshot, Payload: json.RawMessage(`{}`)})
+	readConnFrame(t, c) // The snapshot.
+
+	big := json.RawMessage(`{"id":"m1","text":"` + strings.Repeat("x", 64<<10) + `"}`)
+	h.publishSession("s1", "message", big)
+	h.publish("agent_runs", json.RawMessage(`[]`))
+
+	ring := h.frames()
+	last := ring[len(ring)-1]
+	require.Equal(t, "agent_runs", last.Type)
+	session := ring[len(ring)-2]
+	require.Equal(t, "message", session.Type)
+	require.Equal(t, "s1", session.Session)
+	require.Empty(t, session.Payload, "a per-session frame keeps no payload in the ring")
+	for i := 1; i < len(ring); i++ {
+		require.Equal(t, ring[i-1].Seq+1, ring[i].Seq, "the ring stays contiguous in seq")
+	}
+
+	live := readConnFrame(t, c)
+	require.Equal(t, "message", live.Type)
+	require.Equal(t, "s1", live.Session, "a live frame keeps its session")
+	require.Equal(t, big, live.Payload, "a live subscriber gets the full payload")
+}
+
 func TestRingIsBounded(t *testing.T) {
 	t.Parallel()
 	h := newHub()
@@ -260,17 +303,67 @@ func TestSinceAheadOfHeadOrMalformedGetsBootstrap(t *testing.T) {
 	}
 }
 
-func TestIdleConnectionIsClosed(t *testing.T) {
+// idleWindow is the idle limit the keep-alive tests run with: short enough
+// that a few windows pass inside a test, and with a ping interval inside it.
+const idleWindow = 150 * time.Millisecond
+
+// TestHiddenTabStaysConnected pins what keeps a background tab alive. Its
+// JavaScript timer is throttled to about once a minute once it has been
+// hidden for five, so it sends nothing for longer than the idle limit, but it
+// still answers the gateway's own ping, which comes well inside the limit.
+func TestHiddenTabStaysConnected(t *testing.T) {
 	t.Parallel()
-	g, err := Start(t.Context(), Options{Workspace: webtestFake(), idleTimeout: 150 * time.Millisecond})
+	g, err := Start(t.Context(), Options{Workspace: webtestFake(), idleTimeout: idleWindow})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
+	c := dialStream(t, g, "")
+	require.Equal(t, frameBootstrap, readFrame(t, c).Type)
+
+	// A socket that reads and nothing else answers the protocol pings.
+	frames := make(chan testFrame, 8)
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, data, err := c.Read(ctx)
+			cancel()
+			if err != nil {
+				close(frames)
+				return
+			}
+			var f testFrame
+			if json.Unmarshal(data, &f) == nil {
+				frames <- f
+			}
+		}
+	}()
+
+	time.Sleep(4 * idleWindow)
+	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
+	select {
+	case f, ok := <-frames:
+		require.True(t, ok, "the connection stayed open")
+		require.Equal(t, frameSessionSnapshot, f.Type)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gateway dropped a tab that answered every ping")
+	}
+}
+
+// TestUnansweredPingDropsTheConnection pins the other half: a client that
+// stops reading cannot answer a ping, so the gateway drops it without waiting
+// for a message the tab would never send.
+func TestUnansweredPingDropsTheConnection(t *testing.T) {
+	t.Parallel()
+	g, err := Start(t.Context(), Options{Workspace: webtestFake(), idleTimeout: idleWindow})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = g.Shutdown(context.Background()) })
 	c := dialStream(t, g, "")
 	readFrame(t, c)
+	// No read is in flight, so the client never sees the pings.
+	time.Sleep(4 * idleWindow)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	_, _, err = c.Read(ctx)
-	require.Error(t, err, "a client that never pings must be dropped")
+	require.Error(t, err, "a client that never answers a ping must be dropped")
 	require.NoError(t, ctx.Err(), "the gateway closed it, not the test deadline")
 }
 
@@ -509,6 +602,34 @@ func TestResubscribeAnswersAFreshSnapshot(t *testing.T) {
 	var s SessionSnapshot
 	require.NoError(t, json.Unmarshal(f.Payload, &s))
 	require.Len(t, s.Messages, 1, "the second snapshot carries the new message")
+}
+
+// TestSubscribeReadsTheSessionOnce pins the single read: the snapshot builder
+// takes the session the subscribe handler already read instead of looking it
+// up again, so a tab cannot be answered from two different session states.
+func TestSubscribeReadsTheSessionOnce(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap, which lists sessions rather than reading one.
+	require.Zero(t, fake.GetSessionCalls(), "the bootstrap reads no single session")
+	subscribeStream(t, c, "s1")
+	require.Equal(t, 1, fake.GetSessionCalls(), "the subscribe path reads the session once")
+}
+
+// TestSubscribeReportsAFailedSnapshot pins the error a store failure gets: a
+// code of its own, never the unknown_session a missing session answers, so the
+// tab can tell a session that is gone from a gateway that cannot read it.
+func TestSubscribeReportsAFailedSnapshot(t *testing.T) {
+	t.Parallel()
+	g, fake := startTest(t)
+	fake.SetSessionErr(errors.New("database is locked"))
+	c := dialStream(t, g, "")
+	readFrame(t, c) // Bootstrap.
+	writeClient(t, c, `{"type":"subscribe","session_id":"s1"}`)
+	f := nextFrameOfType(t.Context(), t, c, frameError)
+	require.Contains(t, string(f.Payload), "snapshot_failed")
+	require.NotContains(t, string(f.Payload), "unknown_session")
 }
 
 // TestSubscribeRefusesAnUnknownSession pins the error frame a stale tab

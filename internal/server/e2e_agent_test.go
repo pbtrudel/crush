@@ -754,3 +754,4 @@ func TestE2E_CancelOfActiveRunAlsoCancelsAcceptedFollowUp(t *testing.T) {
 func (*scriptedCoordinator) ListSettledMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
+func (*scriptedCoordinator) SettleSession(context.Context, string) error { return nil }

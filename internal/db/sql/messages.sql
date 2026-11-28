@@ -96,3 +96,52 @@ FROM messages
 WHERE session_id = ? AND role = 'assistant' AND is_summary_message = 0
 ORDER BY created_at DESC
 LIMIT 1;
+
+-- name: ListLatestMessagesPage :many
+-- The newest page of a session: the gateway's load-older button walks
+-- backwards from it one page at a time. Newest first, so a LIMIT keeps the
+-- newest rows; the caller reverses the page. created_at has one-second
+-- resolution, so rowid breaks ties exactly as ListMessagesBySession does.
+SELECT *
+FROM messages
+WHERE session_id = ?
+ORDER BY created_at DESC, rowid DESC
+LIMIT ?;
+
+-- name: ListMessagesPageBefore :many
+-- One page of a session older than the given message, newest first; the
+-- caller reverses it. The row-value comparison matches ListMessagesBySession's
+-- created_at, rowid order exactly, so paging visits the same rows in the same
+-- order as reading the whole transcript. The caller asks for one row more
+-- than the page to learn whether older messages remain.
+SELECT m.*
+FROM messages m
+WHERE m.session_id = ?
+  AND (m.created_at, m.rowid) < (SELECT b.created_at, b.rowid FROM messages b WHERE b.id = ?)
+ORDER BY m.created_at DESC, m.rowid DESC
+LIMIT ?;
+
+-- name: ListUnfinishedAssistants :many
+-- Where a settle pass starts: the assistant rows that never finished. A
+-- summary is not a turn, so it is never settled. finished_at is written from
+-- the message's finish part, so a NULL means the turn never ended.
+SELECT *
+FROM messages
+WHERE session_id = ?
+  AND role = 'assistant'
+  AND is_summary_message = 0
+  AND finished_at IS NULL
+ORDER BY created_at ASC, rowid ASC;
+
+-- name: ListToolMessagesFrom :many
+-- The tool results that could answer a call made by one of the session's
+-- unfinished assistant rows. A result is created after the assistant row that
+-- made the call, so from_created_at (the oldest unfinished assistant's
+-- created_at) bounds the read and a healthy session reads no tool row at all.
+-- The bound is inclusive because created_at has one-second resolution.
+SELECT *
+FROM messages
+WHERE session_id = ?
+  AND role = 'tool'
+  AND created_at >= ?
+ORDER BY created_at ASC, rowid ASC;
