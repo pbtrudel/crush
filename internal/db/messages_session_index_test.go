@@ -54,6 +54,8 @@ func TestMessagesPageUsesSessionIndex(t *testing.T) {
 				"a page must seek the session index, not scan the messages table")
 			require.NotContains(t, got, "TEMP B-TREE",
 				"the index covers the ordering, so no sort should be needed")
+			require.NotContains(t, got, "idx_messages_session_id",
+				"the single-column index is gone; the composite one serves every session lookup")
 		})
 	}
 }
