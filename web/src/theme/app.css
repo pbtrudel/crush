@@ -25,10 +25,12 @@ html[data-ds-theme='dark'] {
 
 /* The --dsw-alias-* tokens are declared on body by design-platform.css, so
  * the page background is painted here; a body background propagates to the
- * canvas, which is what fills the viewport. */
+ * canvas, which is what fills the viewport. The height is the viewport's and
+ * nothing more: the shell inside bounds itself to it, so the page itself has
+ * nothing to scroll and its inner panes do. */
 body {
   margin: 0;
-  min-height: 100vh;
+  height: 100dvh;
   font-family: var(--dsw-font-family);
   font-size: var(--crush-font-size-text);
   line-height: 1.5;
@@ -37,7 +39,7 @@ body {
 }
 
 #root {
-  min-height: 100vh;
+  height: 100%;
 }
 
 code,
