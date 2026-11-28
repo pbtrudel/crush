@@ -162,10 +162,11 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       const before = store.get().lastSeen
       store.set((state) => ({
         selectedSessionId: sessionID,
-        // The open rows of the previous session are gone with it, and so are
-        // the refusals their rows were waiting on.
-        watchedChildren: [],
-        refusedChildren: [],
+        // Selecting the session already on screen closes no row: it is the
+        // sidebar's own row clicked again, so the children those rows follow
+        // and the refusals they wait on stay. Only a real switch drops the
+        // open rows of the previous session and their refusals with them.
+        ...(sessionID === state.selectedSessionId ? {} : { watchedChildren: [], refusedChildren: [] }),
         lastSeen: markSeen(state.lastSeen, sessionID, updatedAtOf(state, sessionID)),
         error: errorForSelection(state.error, sessionID),
       }))

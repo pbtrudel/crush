@@ -325,6 +325,23 @@ describe('AppStore.selectSession', () => {
     expect(isUnread(store.get(), 's2')).toBe(false)
     expect(storage.getItem('crush.seen')).toContain('"s2":40')
   })
+
+  // The sidebar re-selects the session already on screen when its row is
+  // clicked again. Nothing closed, so the open rows keep the children they
+  // follow and the pages they loaded: clearing them would unsubscribe the
+  // child and leave its transcript loading forever.
+  it('keeps its watched children when the open session is selected again', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
+
+    store.selectSession('s1')
+
+    expect(store.get().selectedSessionId).toBe('s1')
+    expect(store.get().watchedChildren).toEqual([child.id])
+    expect(store.get().sessionData[child.id]?.messages.map((entry) => entry.id)).toEqual(['c1'])
+  })
 })
 
 describe('AppStore.releaseSession', () => {
