@@ -165,6 +165,7 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
     const subscribed = new Set<string>()
     const reconcile = () => {
       const wanted = wantedSubscriptions(store.get())
+      const dropped: string[] = []
       // Unsubscribe first: the gateway caps subscriptions per connection, so
       // a new one is refused while the session it replaces still holds a
       // slot. Dropping what is no longer wanted makes room for what is.
@@ -172,6 +173,7 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
         if (!wanted.includes(sessionID)) {
           subscribed.delete(sessionID)
           stream.unsubscribe(sessionID)
+          dropped.push(sessionID)
         }
       }
       for (const sessionID of wanted) {
@@ -179,6 +181,12 @@ export function useGateway(options: GatewayOptions = {}): Gateway {
           subscribed.add(sessionID)
           stream.subscribe(sessionID)
         }
+      }
+      // The data goes after the loop: releasing it notifies the store, and
+      // that runs this reconcile again. Doing it outside the diff keeps the
+      // second pass from walking a set the first one is still changing.
+      for (const sessionID of dropped) {
+        store.releaseSession(sessionID)
       }
     }
     reconcile()

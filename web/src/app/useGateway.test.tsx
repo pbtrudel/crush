@@ -291,6 +291,31 @@ describe('useGateway', () => {
     unsubscribe.mockRestore()
   })
 
+  it('releases the data of a session it stops following', async () => {
+    const h = harness('#t=abc123', null)
+    const { result, unmount } = renderHook(() => useGateway(h.options))
+    await waitFor(() => expect(result.current.state).toBe('ready'))
+    act(() => {
+      result.current.store.set({ sessions: [sessionRow('s1'), sessionRow('s2')] })
+      result.current.store.selectSession('s1')
+    })
+    act(() =>
+      result.current.store.applyFrame({
+        seq: 1,
+        type: 'session_snapshot',
+        sessionId: 's1',
+        payload: { session_id: 's1', messages: [], has_more: false, files: [], busy: false, queued: [] },
+      }),
+    )
+    expect(result.current.store.get().sessionData.s1).toBeDefined()
+
+    // s1 is idle and no longer selected, so the tab drops its subscription
+    // and with it the page of history it kept for a stream it cannot get.
+    act(() => result.current.store.selectSession('s2'))
+    expect(result.current.store.get().sessionData.s1).toBeUndefined()
+    unmount()
+  })
+
   it('unsubscribes before it subscribes when the wanted set is full', async () => {
     const subscribe = vi.spyOn(StreamClient.prototype, 'subscribe')
     const unsubscribe = vi.spyOn(StreamClient.prototype, 'unsubscribe')

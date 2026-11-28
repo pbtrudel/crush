@@ -248,6 +248,50 @@ describe('AppStore.selectSession', () => {
   })
 })
 
+describe('AppStore.releaseSession', () => {
+  function withMessages(store: ReturnType<typeof createAppStore>, sessionID: string) {
+    store.applyFrame(
+      frame('session_snapshot', {
+        session_id: sessionID,
+        messages: [{ id: `${sessionID}-m1`, role: 'user', session_id: sessionID, parts: [], created_at: 1, updated_at: 1 }],
+        has_more: false,
+        files: [],
+        busy: false,
+        queued: [],
+      }, 2, sessionID),
+    )
+  }
+
+  it('drops what the tab loaded for a session it stopped following', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    withMessages(store, 's2')
+    expect(store.get().sessionData.s2).toBeDefined()
+    store.releaseSession('s2')
+    expect(store.get().sessionData.s2).toBeUndefined()
+    // The row stays: the session still exists, the tab just holds no page of
+    // its history any more.
+    expect(store.get().sessions.map((row) => row.id)).toEqual(['s1', 's2'])
+  })
+
+  it('never releases the session on screen', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    store.selectSession('s2')
+    withMessages(store, 's2')
+    store.releaseSession('s2')
+    expect(store.get().sessionData.s2?.messages).toHaveLength(1)
+  })
+
+  it('keeps the state object when there is nothing to release', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrap)
+    const before = store.get()
+    store.releaseSession('s2')
+    expect(store.get()).toBe(before)
+  })
+})
+
 describe('AppStore.forgetSession', () => {
   it('clears the selection and the messages of the deleted session', () => {
     const store = createAppStore(memoryStorage())

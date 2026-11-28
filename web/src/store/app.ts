@@ -95,6 +95,21 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
       }))
       persistSeen(before)
     },
+    // releaseSession drops what the tab loaded for a session it no longer
+    // follows. The row stays: the session still exists, the tab just holds no
+    // page of its history any more. The open session keeps its data — it is
+    // always wanted while it is selected, so the guard is a second belt on
+    // the invariant the frame renders from.
+    releaseSession: (sessionID: string) => {
+      store.set((state) => {
+        if (sessionID === state.selectedSessionId || !(sessionID in state.sessionData)) {
+          return {}
+        }
+        const sessionData = { ...state.sessionData }
+        delete sessionData[sessionID]
+        return { sessionData }
+      })
+    },
     // forgetSession drops a deleted session at once, without waiting for the
     // gateway's deleted frame: the row, its messages, a selection pointing at
     // it and its seen mark all go.
@@ -111,6 +126,7 @@ export interface AppStore {
   applyFrame(frame: ParsedFrame): void
   setConnection(connection: ConnectionState): void
   selectSession(sessionID: string): void
+  releaseSession(sessionID: string): void
   forgetSession(sessionID: string): void
   dismissError(): void
 }
