@@ -238,7 +238,7 @@ describe('ConversationContainer', () => {
     expect(articles()).toEqual(['hello', 'hi there', 'later'])
   })
 
-  it('drops the loaded pages when the selection changes', async () => {
+  it('brings an idle session the tab stops following back without its pages', async () => {
     const { store } = setup(
       {
         sessions: [row(), row({ id: 's2', title: 'Other session' })],
@@ -320,6 +320,65 @@ describe('ConversationContainer', () => {
     act(() => store.applyBootstrap(bootstrap))
     await act(async () => answer({ messages: [message('m0', 'stale page')], has_more: false }))
     expect(screen.queryByText('stale page')).toBeNull()
+  })
+
+  it('keeps the pages of a session that stays subscribed across a selection change', async () => {
+    const { store } = setup(
+      {
+        // A running session stays subscribed, so the app releases nothing
+        // when the selection moves: its entry, pages and all, is kept.
+        sessions: [row({ status: 'running' }), row({ id: 's2', title: 'Other session' })],
+        selectedSessionId: 's1',
+        sessionData: { s1: data([message('m2', 'hi there')], true), s2: data([message('m4', 'elsewhere', 'user', 's2')]) },
+      },
+      async () => ({ messages: [message('m1', 'hello', 'user')], has_more: true }),
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
+    await screen.findByText('hello')
+    act(() => {
+      store.selectSession('s2')
+    })
+    expect(await screen.findByText('elsewhere')).toBeInTheDocument()
+    expect(screen.queryByText('hello')).toBeNull()
+    act(() =>
+      store.applyFrame({
+        seq: 9,
+        type: 'message',
+        sessionId: 's1',
+        payload: { type: 'updated', payload: message('m1', 'hello, edited', 'user') },
+      }),
+    )
+    act(() => {
+      store.selectSession('s1')
+    })
+    expect(await screen.findByText('hi there')).toBeInTheDocument()
+    // The page is still there, with the edit that arrived while it was off
+    // screen written into it.
+    expect(screen.getByText('hello, edited')).toBeInTheDocument()
+    expect(articles()).toEqual(['hello, edited', 'hi there'])
+  })
+
+  it('drops a page that answers after the app released and reopened the session', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    const { store } = setup(
+      { selectedSessionId: 's1', sessions: [row(), row({ id: 's2', title: 'Other session' })], sessionData: {} },
+      () => new Promise((resolve) => (answer = resolve)),
+    )
+    // The store opens the entry, so the generation the page is asked under
+    // is one the store itself handed out.
+    act(() => store.applyFrame(snapshotFrame('s1', [message('m1', 'hello')])))
+    await userEvent.click(screen.getByRole('button', { name: 'Load older messages' }))
+    act(() => {
+      // useGateway unsubscribes the session the selection left and releases
+      // it, then the resubscribe opens a new entry for the same session.
+      store.selectSession('s2')
+      store.releaseSession('s1')
+      store.applyFrame(snapshotFrame('s1', [message('m1', 'hello')]))
+      store.selectSession('s1')
+    })
+    await act(async () => answer({ messages: [message('m0', 'stale page')], has_more: false }))
+    expect(screen.queryByText('stale page')).toBeNull()
+    expect(store.get().sessionData.s1.older).toEqual([])
   })
 
   it('renders the pane for a session the list does not carry yet', () => {

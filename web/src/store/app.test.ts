@@ -845,6 +845,22 @@ describe('older pages', () => {
     store.failOlderPage(ticket, 'no such session')
     expect(store.get().sessionData.s1).toMatchObject({ loadingOlder: false, olderError: 'no such session' })
   })
+
+  it('drops a page whose session was released and opened again', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top, { ...top, id: 's2', title: 'Other' }]))
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    const ticket = store.beginOlderPage('s1') as OlderPageTicket
+    // The tab stops following the session and starts again: its entry is a
+    // new lifetime, and the page that was in flight belongs to the old one.
+    // Generations come from one counter that only ever grows, so the new
+    // entry cannot answer to the ticket the old one handed out.
+    store.selectSession('s2')
+    store.releaseSession('s1')
+    store.applyFrame(snapshot('s1', [msg('m5', 'five')]))
+    store.applyOlderPage(ticket, { messages: [msg('m4', 'stale')], has_more: false })
+    expect(store.get().sessionData.s1.older).toEqual([])
+  })
 })
 
 describe('visibleMessages', () => {
@@ -882,6 +898,19 @@ describe('subagent sessions', () => {
     store.applyBootstrap(bootstrapPayload([top]))
     store.applyFrame(snapshot(child.id, [msg('c1', 'child says', child.id)], 's1'))
     expect(store.get().sessionData[child.id]).toBeUndefined()
+  })
+
+  it('stops watching a child the workspace deleted', () => {
+    const store = createAppStore(memoryStorage())
+    store.applyBootstrap(bootstrapPayload([top]))
+    store.watchChild(child.id)
+    expect(wantedSubscriptions(store.get())).toEqual(['s1', child.id])
+    // The subagent is gone, so nothing follows it any more: a watch left
+    // behind would hold a subscription slot for a session that cannot
+    // answer.
+    store.applyFrame({ seq: 5, type: 'session', payload: { type: 'deleted', payload: child } })
+    expect(store.get().watchedChildren).toEqual([])
+    expect(wantedSubscriptions(store.get())).toEqual(['s1'])
   })
 
   it('subscribes a watched child after the live sessions, and forgets it on unwatch', () => {

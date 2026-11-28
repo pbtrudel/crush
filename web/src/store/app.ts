@@ -31,10 +31,11 @@ export interface SessionData {
   files: { path: string }[]
   // snapshotSeq counts the snapshots the tab has applied for the session.
   snapshotSeq: number
-  // generation moves on every snapshot for the session and on every
-  // bootstrap. An older page is applied only under the generation its
-  // request started in, so a page that answers across a resync, before
-  // the new snapshot lands, is dropped instead of joining the new list.
+  // generation is the page generation this entry's list belongs to, taken
+  // from AppState.generation. An older page is applied only under the
+  // generation its request started in, so a page that answers across a
+  // resync, a new snapshot, or an entry the store dropped and opened again
+  // is dropped instead of joining the new list.
   generation: number
 }
 
@@ -44,6 +45,12 @@ export interface AppState {
   sessions: SessionRow[]
   selectedSessionId: string | null
   sessionData: Record<string, SessionData>
+  // generation is the tab's page counter. It only ever grows, and every
+  // snapshot and every bootstrap reset takes the next value from it. Taking
+  // one value per page set is what keeps a generation unique for the
+  // session's lifetime: an entry deleted and opened again gets a value no
+  // ticket handed out before the delete can name.
+  generation: number
   // watchedChildren are the subagent sessions an open tool row follows.
   // They are subscribed after the live sessions and never get a row.
   watchedChildren: string[]
@@ -98,6 +105,7 @@ export function createAppStore(storage: Storage = localStorage): Store<AppState>
     sessions: [],
     selectedSessionId: null,
     sessionData: {},
+    generation: 0,
     watchedChildren: [],
     lastSeen: readSeen(storage),
     error: null,
@@ -230,12 +238,16 @@ export function reduceBootstrap(state: AppState, payload: Bootstrap): AppState {
   // An empty list means ListSessions failed, not that every session vanished:
   // pruning then would throw away every seen mark the person has.
   const pruned = rows.length === 0 ? state.lastSeen : pruneSeen(state.lastSeen, rows)
+  // One value for the whole bootstrap: every entry the tab keeps belongs to
+  // the new generation from here on, and no ticket can name it.
+  const generation = state.generation + 1
   return {
     ...state,
     bootstrap: payload,
     sessions: rows,
     selectedSessionId,
-    sessionData: resetPages(state.sessionData),
+    generation,
+    sessionData: resetPages(state.sessionData, generation),
     // The session a bootstrap opens was on screen before it was selected, so
     // it starts seen instead of unread. Without this, switching away from it
     // would show a marker for a session the person has been reading.
@@ -269,9 +281,13 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
         sessions = mergeSessionEvent(state.sessions, { type: 'created', payload: { ...entity, id } })
       }
       const previous = state.sessionData[id]
+      // The next value from the tab's counter, so a generation this session
+      // held at any earlier point cannot come round again.
+      const generation = state.generation + 1
       return {
         ...state,
         sessions,
+        generation,
         sessionData: {
           ...state.sessionData,
           [id]: {
@@ -283,7 +299,7 @@ export function reduceFrame(state: AppState, frame: ParsedFrame): AppState {
             queued: snapshot.queued,
             files: snapshot.files,
             snapshotSeq: (previous?.snapshotSeq ?? 0) + 1,
-            generation: (previous?.generation ?? 0) + 1,
+            generation,
           },
         },
       }
@@ -446,11 +462,12 @@ export function visibleMessages(older: WireMessage[], messages: WireMessage[]): 
   return out
 }
 
-// resetPages drops every loaded older page and moves every generation, for
-// a bootstrap: whatever was read under the old connection belongs to a
-// list the new snapshots replace. Dropping a page means history exists
-// before the snapshot, so has_more turns true.
-function resetPages(sessionData: Record<string, SessionData>): Record<string, SessionData> {
+// resetPages drops every loaded older page and moves every entry to the
+// generation a bootstrap reset takes from the tab's counter: whatever was
+// read under the old connection belongs to a list the new snapshots
+// replace. Dropping a page means history exists before the snapshot, so
+// has_more turns true.
+function resetPages(sessionData: Record<string, SessionData>, generation: number): Record<string, SessionData> {
   const out: Record<string, SessionData> = {}
   for (const [id, data] of Object.entries(sessionData)) {
     out[id] = {
@@ -459,7 +476,7 @@ function resetPages(sessionData: Record<string, SessionData>): Record<string, Se
       hasMore: data.older.length > 0 ? true : data.hasMore,
       loadingOlder: false,
       olderError: null,
-      generation: data.generation + 1,
+      generation,
     }
   }
   return out
@@ -488,9 +505,10 @@ function mergeSessionEvent(rows: SessionRow[], event: SessionEvent): SessionRow[
 }
 
 // dropSession is the one cleanup for a session that is gone, whether the
-// tab deleted it or another tab did: the row, its messages, a selection
-// pointing at it and its seen mark. The guards in reduceFrame then ignore a
-// later snapshot, message or run end for it, so no orphan data comes back.
+// tab deleted it or another tab did: the row, its messages, a watch on it,
+// a selection pointing at it and its seen mark. The guards in reduceFrame
+// then ignore a later snapshot, message or run end for it, so no orphan
+// data comes back.
 function dropSession(state: AppState, sessionID: string): AppState {
   const sessionData = { ...state.sessionData }
   delete sessionData[sessionID]
@@ -499,6 +517,10 @@ function dropSession(state: AppState, sessionID: string): AppState {
     ...state,
     sessions: state.sessions.filter((row) => row.id !== sessionID),
     sessionData,
+    // A deleted subagent stops holding a subscription slot as well.
+    watchedChildren: state.watchedChildren.includes(sessionID)
+      ? state.watchedChildren.filter((id) => id !== sessionID)
+      : state.watchedChildren,
     selectedSessionId,
     lastSeen: withoutKey(state.lastSeen, sessionID),
     error: errorForSelection(state.error, selectedSessionId),
